@@ -1,0 +1,18 @@
+version: '3.9'
+services:
+  scribe:
+    build: .
+    container_name: discord-scribe
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OPENAI_TRANSCRIBE_MODEL=${OPENAI_TRANSCRIBE_MODEL:-whisper-1}
+      - SPEECH_LANG=${SPEECH_LANG:-ru}
+      - SUMMARY_PROMPT=${SUMMARY_PROMPT}
+      - KEEP_RECORDINGS=${KEEP_RECORDINGS}
+    volumes:
+      - ./recordings:/app/recordings
+
+

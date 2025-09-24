@@ -1,0 +1,15 @@
+{
+  "dependencies": {
+    "@discordjs/opus": "^0.5.0",
+    "discord.js": "github:discordjs/discord.js",
+    "dotenv": "^8.2.0",
+    "openai": "^4.60.0",
+    "wav": "^1.0.2"
+  },
+  "name": "scribe",
+  "version": "1.0.0",
+  "main": "index.js",
+  "author": "snek",
+  "license": "MIT",
+  "description": ""
+}
