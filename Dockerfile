@@ -1,5 +1,8 @@
 FROM node:22-alpine
 
+# Install build dependencies
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
 # Install production deps
