@@ -1,7 +1,7 @@
 {
   "dependencies": {
     "opusscript": "^0.0.8",
-    "discord.js": "github:discordjs/discord.js",
+    "discord.js": "^14.14.1",
     "dotenv": "^8.2.0",
     "openai": "^4.60.0",
     "wav": "^1.0.2"
