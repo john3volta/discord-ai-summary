@@ -41,48 +41,51 @@ async function summarizeTranscript(transcript) {
   return res.choices && res.choices[0] && res.choices[0].message && res.choices[0].message.content || '';
 }
 
-function registerCommands(guild) {
-  client.api.applications(client.user.id).guilds(guild.id).commands.put({
-    data: [
+async function registerCommands(guild) {
+  try {
+    const commands = [
       {
         name: 'start',
         description: 'Join a voice channel and begin transcribing',
         options: [
           {
-            type: 7, // CHANNEL
+            type: discord.ApplicationCommandOptionType.Channel,
             name: 'channel',
             description: 'Voice channel to join (defaults to your current)',
             required: false,
           },
         ],
-        version: '1',
       },
       {
         name: 'stop',
         description: 'Stop transcribing and leave a voice channel',
         options: [
           {
-            type: 7, // CHANNEL
+            type: discord.ApplicationCommandOptionType.Channel,
             name: 'channel',
             description: 'Voice channel to stop (defaults to your current)',
             required: false,
           },
         ],
-        version: '1',
       },
-    ],
-  });
+    ];
+
+    await guild.commands.set(commands);
+    console.log(`Registered commands for guild: ${guild.name}`);
+  } catch (error) {
+    console.error(`Failed to register commands for guild ${guild.name}:`, error);
+  }
 }
 
-client.on('ready', () => {
+client.on('ready', async () => {
   console.log('Ready as', client.user.tag);
-  client.guilds.cache.forEach((g) => {
-    registerCommands(g);
-  });
+  for (const guild of client.guilds.cache.values()) {
+    await registerCommands(guild);
+  }
 });
 
-client.on('guildCreate', (guild) => {
-  registerCommands(guild);
+client.on('guildCreate', async (guild) => {
+  await registerCommands(guild);
 });
 
 const CHANNELS = new Map();
