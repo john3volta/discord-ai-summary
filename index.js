@@ -11,7 +11,7 @@ const wav = require('wav');
 
 const debug = util.debuglog('streams');
 const client = new discord.Client({
-  intents: ['GUILDS', 'GUILD_VOICE_STATES'],
+  intents: [discord.GatewayIntentBits.Guilds, discord.GatewayIntentBits.GuildVoiceStates],
 });
 
 // Load summary prompt from configurable file
