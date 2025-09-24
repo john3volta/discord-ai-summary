@@ -14,19 +14,26 @@ const client = new discord.Client({
   intents: ['GUILDS', 'GUILD_VOICE_STATES'],
 });
 
-async function summarizeTranscript(transcript, userPrompt) {
+// Load summary prompt from configurable file
+function loadPromptFile() {
+  const promptFile = process.env.SUMMARY_PROMPT || 'prompt.md';
+  try {
+    return fs.readFileSync(path.join(process.cwd(), promptFile), 'utf8');
+  } catch (e) {
+    console.error(`Prompt file "${promptFile}" not found. Please create the file or set SUMMARY_PROMPT env var.`);
+    process.exit(1);
+  }
+}
+
+async function summarizeTranscript(transcript) {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return 'OPENAI_API_KEY не задан — саммари пропущено.';
+  if (!apiKey) return 'OPENAI_API_KEY not set — summary skipped.';
   const openai = new OpenAI({ apiKey });
-  const system = 'Ты помощник-секретарь. Делай краткие, структурированные саммари на русском.';
-  const prompt = userPrompt || process.env.SUMMARY_PROMPT || (
-    'Сделай краткое саммари созвона на русском. Структура:\n- Цели/контекст\n- Принятые решения\n- Задачи: "ответственный — задача — срок"\n- Риски и открытые вопросы'
-  );
-  const content = `${prompt}\n\nТранскрипт:\n${transcript.slice(0, 120000)}`;
+  const promptContent = loadPromptFile();
+  const content = `${promptContent}\n\nTranscript:\n${transcript.slice(0, 120000)}`;
   const res = await openai.chat.completions.create({
     model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     messages: [
-      { role: 'system', content: system },
       { role: 'user', content },
     ],
     temperature: 0.2,
@@ -197,7 +204,7 @@ class ChannelState {
 
         // Build markdown transcript grouped by users
         const lines = [];
-        lines.push(`# Транскрипт: ${this.connection.channel.name}`);
+        lines.push(`# Transcript: ${this.connection.channel.name}`);
         lines.push('');
         for (const u of userTexts) {
           if (!u.text) continue;
