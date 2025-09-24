@@ -141,26 +141,54 @@ class ChannelState {
   constructor(connection, webhook) {
     this.connection = connection;
     this.webhook = webhook;
-    this.channelID = this.connection.channel.id;
+    this.channelID = connection.joinConfig.channelId;
     this.states = new Map();
     this.collected = [];
 
-    this.connection.on('disconnect', () => {
+    const { VoiceConnectionStatus, AudioReceiveStream } = require('@discordjs/voice');
+
+    this.connection.on(VoiceConnectionStatus.Disconnected, () => {
       CHANNELS.delete(this.channelID);
       this.close();
     });
 
-    this.connection.on('speaking', (user, speaking) => {
-      if (!this.states.has(user.id)) {
-        const member = this.connection.channel.guild.members.cache.get(user.id);
-        this.states.set(user.id, new UserState(this, member));
-      }
-      const userState = this.states.get(user.id);
-      if (speaking.bitfield !== 0) {
-        userState.start();
-      } else {
-        userState.stop();
-      }
+    this.receiver = this.connection.receiver;
+    
+    this.connection.on(VoiceConnectionStatus.Ready, () => {
+      console.log('Voice connection ready');
+      
+      // Handle speaking events for audio capture
+      this.receiver.speaking.on('start', (userId) => {
+        if (!this.states.has(userId)) {
+          // Get user info from guild members
+          const guild = client.guilds.cache.find(g => g.channels.cache.has(this.channelID));
+          const member = guild?.members.cache.get(userId);
+          if (member) {
+            this.states.set(userId, new UserState(this, member));
+          }
+        }
+        const userState = this.states.get(userId);
+        if (userState) {
+          userState.start();
+          
+          // Subscribe to user's audio stream
+          const audioStream = this.receiver.subscribe(userId, {
+            end: {
+              behavior: 'manual'
+            }
+          });
+          
+          // Pipe audio to user's recording stream
+          audioStream.pipe(userState.stream, { end: false });
+        }
+      });
+      
+      this.receiver.speaking.on('end', (userId) => {
+        const userState = this.states.get(userId);
+        if (userState) {
+          userState.stop();
+        }
+      });
     });
   }
 
@@ -207,7 +235,7 @@ class ChannelState {
 
         // Build markdown transcript grouped by users
         const lines = [];
-        lines.push(`# Transcript: ${this.connection.channel.name}`);
+        lines.push(`# Transcript: Voice Channel`);
         lines.push('');
         for (const u of userTexts) {
           if (!u.text) continue;
@@ -261,74 +289,74 @@ client.on('voiceStateUpdate', (oldState, newState) => {
   }
 });
 
-client.ws.on('INTERACTION_CREATE', (interaction) => {
-  if (interaction.type !== 2) {
-    return;
-  }
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
 
-  client.api.interactions(interaction.id, interaction.token).callback.post({
-    data: {
-      type: 5,
-      data: {
-        flags: 1 << 6,
-      },
-    },
-  });
+  try {
+    await interaction.deferReply({ ephemeral: true });
 
-  const hook = new discord.WebhookClient(client.user.id, interaction.token);
+    const { guild, member, options } = interaction;
 
-  (async () => {
-    const guild = client.guilds.cache.get(interaction.guild_id);
-    const member = guild.members.cache.get(interaction.member.user.id);
-
-    switch (interaction.data.name) {
+    switch (interaction.commandName) {
       case 'start': {
         // Optional channel param for starting from any text channel
-        const channelOption = interaction.data.options && interaction.data.options.find(o => o.name === 'channel');
-        let voiceChannel = channelOption ? guild.channels.cache.get(channelOption.value) : (member && member.voice && member.voice.channel);
-        if (!voiceChannel || voiceChannel.type !== 'GUILD_VOICE') {
+        const channelOption = options.getChannel('channel');
+        let voiceChannel = channelOption || (member?.voice?.channel);
+        
+        if (!voiceChannel || voiceChannel.type !== discord.ChannelType.GuildVoice) {
           throw new Error('Please specify a voice channel or join one');
         }
+        
         if (!CHANNELS.has(voiceChannel.id)) {
-          const webhook = await guild.channels.cache.get(interaction.channel_id)
-            .createWebhook('Scribe', {
-              reason: `Transcription of ${voiceChannel.name}`,
-            });
-          const connection = await voiceChannel.join();
+          const webhook = await interaction.channel.createWebhook({
+            name: 'Scribe',
+            reason: `Transcription of ${voiceChannel.name}`,
+          });
+          
+          const { joinVoiceChannel } = require('@discordjs/voice');
+          const connection = joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: guild.id,
+            adapterCreator: guild.voiceAdapterCreator,
+          });
+          
           const state = new ChannelState(connection, webhook);
           CHANNELS.set(voiceChannel.id, state);
-          connection.setSpeaking(0);
         }
+        
+        await interaction.editReply('\u{2705} Started transcription!');
         break;
       }
       case 'stop': {
-        const channelOption = interaction.data.options && interaction.data.options.find(o => o.name === 'channel');
-        const voiceChannel = channelOption ? guild.channels.cache.get(channelOption.value) : (member && member.voice && member.voice.channel);
+        const channelOption = options.getChannel('channel');
+        const voiceChannel = channelOption || (member?.voice?.channel);
+        
         if (!voiceChannel) {
           throw new Error('Please specify a voice channel or join one');
         }
+        
         const state = CHANNELS.get(voiceChannel.id);
-        state.close();
+        if (!state) {
+          throw new Error('No active transcription in this channel');
+        }
+        
+        await state.close();
+        CHANNELS.delete(voiceChannel.id);
+        
+        await interaction.editReply('\u{2705} Stopped transcription!');
         break;
       }
-      default:
-        break;
     }
-  })()
-    .then(
-      (v) => {
-        hook.send({
-          content: v || '\u{2705}',
-          flags: 1 << 6,
-        });
-      },
-      (e) => {
-        hook.send({
-          content: `\u{274C} ${e.message.split('\n')[0]}`,
-          flags: 1 << 6,
-        });
-      },
-    );
+  } catch (error) {
+    console.error('Interaction error:', error);
+    const content = `\u{274C} ${error.message}`;
+    
+    if (interaction.deferred) {
+      await interaction.editReply(content);
+    } else {
+      await interaction.reply({ content, ephemeral: true });
+    }
+  }
 });
 
 process.on('uncaughtException', (e) => {
