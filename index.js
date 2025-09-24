@@ -91,28 +91,32 @@ client.on('guildCreate', async (guild) => {
 const CHANNELS = new Map();
 
 class UserState {
-  constructor(channelState, member) {
+  constructor(channelState, member, audioStream) {
     this.channelState = channelState;
     this.member = member;
-    this.stream = channelState.connection.receiver.createStream(member.user, {
-      mode: 'pcm',
-      end: 'manual',
-    });
+    this.audioStream = audioStream;
 
     // Prepare per-user WAV recording
     const recDir = path.join(process.cwd(), 'recordings');
     try { fs.mkdirSync(recDir, { recursive: true }); } catch {}
     this.filePath = path.join(
       recDir,
-      `${channelState.connection.channel.id}-${member.user.id}-${Date.now()}.wav`
+      `${channelState.channelID}-${member.user.id}-${Date.now()}.wav`
     );
     this.writer = new wav.Writer({ sampleRate: 48000, channels: 2, bitDepth: 16 });
     this.fileOut = fs.createWriteStream(this.filePath);
     this.writer.pipe(this.fileOut);
-    this.stream.pipe(this.writer);
+    
+    // Connect audio stream to WAV writer
+    if (audioStream) {
+      audioStream.pipe(this.writer, { end: false });
+    }
+    
     this.finishPromise = new Promise((resolve) => {
       this.writer.on('finish', resolve);
     });
+    
+    console.log(`Started recording for user: ${member.displayName}`);
   }
 
   start() {
@@ -125,7 +129,9 @@ class UserState {
 
   close() {
     try {
-      this.stream.unpipe(this.writer);
+      if (this.audioStream) {
+        this.audioStream.unpipe(this.writer);
+      }
     } catch {
       // noop
     }
@@ -134,6 +140,7 @@ class UserState {
     } catch {
       // noop
     }
+    console.log(`Stopped recording for user: ${this.member.displayName}`);
   }
 }
 
@@ -159,31 +166,28 @@ class ChannelState {
       
       // Handle speaking events for audio capture
       this.receiver.speaking.on('start', (userId) => {
+        console.log(`User started speaking: ${userId}`);
+        
         if (!this.states.has(userId)) {
           // Get user info from guild members
           const guild = client.guilds.cache.find(g => g.channels.cache.has(this.channelID));
           const member = guild?.members.cache.get(userId);
-          if (member) {
-            this.states.set(userId, new UserState(this, member));
+          if (member && !member.user.bot) {
+            // Subscribe to user's audio stream
+            const audioStream = this.receiver.subscribe(userId, {
+              end: {
+                behavior: 'manual'
+              }
+            });
+            
+            // Create user state with audio stream
+            this.states.set(userId, new UserState(this, member, audioStream));
           }
-        }
-        const userState = this.states.get(userId);
-        if (userState) {
-          userState.start();
-          
-          // Subscribe to user's audio stream
-          const audioStream = this.receiver.subscribe(userId, {
-            end: {
-              behavior: 'manual'
-            }
-          });
-          
-          // Pipe audio to user's recording stream
-          audioStream.pipe(userState.stream, { end: false });
         }
       });
       
       this.receiver.speaking.on('end', (userId) => {
+        console.log(`User stopped speaking: ${userId}`);
         const userState = this.states.get(userId);
         if (userState) {
           userState.stop();
@@ -293,7 +297,7 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   try {
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: discord.MessageFlags.Ephemeral });
 
     const { guild, member, options } = interaction;
 
@@ -354,7 +358,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.deferred) {
       await interaction.editReply(content);
     } else {
-      await interaction.reply({ content, ephemeral: true });
+      await interaction.reply({ content, flags: discord.MessageFlags.Ephemeral });
     }
   }
 });
