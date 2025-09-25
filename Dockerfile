@@ -9,10 +9,9 @@ RUN npm ci --omit=dev || npm i --omit=dev
 # Copy source
 COPY . .
 
-# Environment
-ENV NODE_ENV=production
+# Create recordings directory
+RUN mkdir -p recordings
 
-# Run
 CMD ["node", "index.js"]
 
 

@@ -255,11 +255,19 @@ class ChannelState {
         try { summary = await summarizeTranscript(transcript); } catch (e) { console.error('Summary error', e); }
 
         if (summary && summary.length > 0) {
-          await this.webhook.send(summary);
+          try {
+            await this.webhook.send(summary);
+          } catch (err) {
+            console.error('Failed to send summary via webhook:', err.message);
+          }
         }
         if (transcript && transcript.length > 0) {
-          const buf = Buffer.from(transcript, 'utf8');
-          await this.webhook.send({ files: [{ attachment: buf, name: 'transcript.md' }] });
+          try {
+            const buf = Buffer.from(transcript, 'utf8');
+            await this.webhook.send({ files: [{ attachment: buf, name: 'transcript.md' }] });
+          } catch (err) {
+            console.error('Failed to send transcript via webhook:', err.message);
+          }
         }
 
         // Cleanup recordings unless KEEP_RECORDINGS is truthy
@@ -272,7 +280,13 @@ class ChannelState {
       } catch (err) {
         console.error('Finalize/post error', err);
       } finally {
-        try { this.webhook.delete('Transcription completed'); } catch {}
+        try { 
+          if (this.webhook) {
+            await this.webhook.delete('Transcription completed');
+          }
+        } catch (err) {
+          console.error('Failed to delete webhook:', err.message);
+        }
         if (this.connection.status !== 4) {
           try { this.connection.disconnect(); } catch {}
         }
