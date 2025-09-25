@@ -210,12 +210,19 @@ class ChannelState {
   close() {
     (async () => {
       try {
+        console.log(`Starting finalization for channel ${this.channelID} with ${this.states.size} users`);
+        
         // Close all user streams first and wait for files to finish writing
         const toClose = [];
-        this.states.forEach((s) => { try { s.close(); } catch {}; if (s.finishPromise) toClose.push(s.finishPromise); });
+        this.states.forEach((s) => { 
+          console.log(`Closing recording for ${s.member.displayName}, file: ${s.filePath}`);
+          try { s.close(); } catch {}; 
+          if (s.finishPromise) toClose.push(s.finishPromise); 
+        });
         try { await Promise.all(toClose); } catch {}
         
         // Wait a bit more to ensure WAV files are fully written
+        console.log('Waiting for WAV files to finish writing...');
         await new Promise(resolve => setTimeout(resolve, 1000));
 
         // Transcribe each user's recording via OpenAI
