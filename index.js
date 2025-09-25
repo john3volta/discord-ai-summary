@@ -95,6 +95,8 @@ class UserState {
     this.channelState = channelState;
     this.member = member;
     this.audioStream = audioStream;
+    this.totalBytes = 0;
+    this.startTime = Date.now();
 
     // Prepare per-user WAV recording
     const recDir = path.join(process.cwd(), 'recordings');
@@ -107,8 +109,11 @@ class UserState {
     this.fileOut = fs.createWriteStream(this.filePath);
     this.writer.pipe(this.fileOut);
     
-    // Connect audio stream to WAV writer
+    // Connect audio stream to WAV writer with data tracking
     if (audioStream) {
+      audioStream.on('data', (chunk) => {
+        this.totalBytes += chunk.length;
+      });
       audioStream.pipe(this.writer, { end: false });
     }
     
@@ -116,7 +121,7 @@ class UserState {
       this.writer.on('finish', resolve);
     });
     
-    console.log(`Started recording for user: ${member.displayName}`);
+    console.log(`Started recording for user: ${member.displayName}, file: ${this.filePath}`);
   }
 
   start() {
@@ -128,6 +133,9 @@ class UserState {
   }
 
   close() {
+    const duration = (Date.now() - this.startTime) / 1000;
+    console.log(`Stopping recording for ${this.member.displayName}: ${this.totalBytes} bytes received over ${duration.toFixed(1)}s`);
+    
     try {
       if (this.audioStream) {
         this.audioStream.unpipe(this.writer);
@@ -151,6 +159,7 @@ class ChannelState {
     this.channelID = connection.joinConfig.channelId;
     this.states = new Map();
     this.collected = [];
+    this.isClosing = false;
 
     const { VoiceConnectionStatus, AudioReceiveStream } = require('@discordjs/voice');
 
@@ -208,6 +217,12 @@ class ChannelState {
   }
 
   close() {
+    if (this.isClosing) {
+      console.log(`Finalization already in progress for channel ${this.channelID}`);
+      return;
+    }
+    this.isClosing = true;
+    
     (async () => {
       try {
         console.log(`Starting finalization for channel ${this.channelID} with ${this.states.size} users`);
