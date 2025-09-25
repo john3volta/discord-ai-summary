@@ -132,13 +132,13 @@ class UserState {
       if (this.audioStream) {
         this.audioStream.unpipe(this.writer);
       }
-    } catch {
-      // noop
+    } catch (e) {
+      console.error(`Error unpiping audio stream for ${this.member.displayName}:`, e.message);
     }
     try {
       this.writer.end();
-    } catch {
-      // noop
+    } catch (e) {
+      console.error(`Error ending WAV writer for ${this.member.displayName}:`, e.message);
     }
     console.log(`Stopped recording for user: ${this.member.displayName}`);
   }
@@ -214,6 +214,9 @@ class ChannelState {
         const toClose = [];
         this.states.forEach((s) => { try { s.close(); } catch {}; if (s.finishPromise) toClose.push(s.finishPromise); });
         try { await Promise.all(toClose); } catch {}
+        
+        // Wait a bit more to ensure WAV files are fully written
+        await new Promise(resolve => setTimeout(resolve, 1000));
 
         // Transcribe each user's recording via OpenAI
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -223,6 +226,22 @@ class ChannelState {
         const filesToDelete = [];
         for (const [userId, s] of this.states) {
           try {
+            // Check if file exists and has content
+            if (!fs.existsSync(s.filePath)) {
+              console.log(`Skipping transcription for ${s.member.displayName}: file not found`);
+              continue;
+            }
+            
+            const fileStats = fs.statSync(s.filePath);
+            console.log(`Processing file for ${s.member.displayName}: ${s.filePath} (${fileStats.size} bytes)`);
+            
+            // Skip files that are too small (less than 1KB usually means no actual audio)
+            if (fileStats.size < 1024) {
+              console.log(`Skipping transcription for ${s.member.displayName}: file too small (${fileStats.size} bytes)`);
+              filesToDelete.push(s.filePath);
+              continue;
+            }
+
             const fileStream = fs.createReadStream(s.filePath);
             const tr = await openai.audio.transcriptions.create({
               file: fileStream,
@@ -230,10 +249,15 @@ class ChannelState {
               language: (process.env.SPEECH_LANG || 'ru'),
             });
             const text = tr?.text || '';
+            console.log(`Transcription completed for ${s.member.displayName}: ${text.length} characters`);
             userTexts.push({ name: s.member.displayName, text });
             filesToDelete.push(s.filePath);
           } catch (e) {
-            console.error('Transcription error for user', userId, e);
+            console.error(`Transcription error for user ${s.member.displayName} (${userId}):`, e.message);
+            // Still add file to deletion list
+            if (fs.existsSync(s.filePath)) {
+              filesToDelete.push(s.filePath);
+            }
           }
         }
 
