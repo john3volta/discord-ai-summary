@@ -109,7 +109,7 @@ class UserState {
     this.fileOut = fs.createWriteStream(this.filePath);
     this.writer.pipe(this.fileOut);
     
-    // Connect audio stream to WAV writer with data tracking
+    // Connect audio stream to WAV writer with data tracking - НЕПРЕРЫВНО
     if (audioStream) {
       audioStream.on('data', (chunk) => {
         this.totalBytes += chunk.length;
@@ -121,20 +121,12 @@ class UserState {
       this.writer.on('finish', resolve);
     });
     
-    console.log(`Started recording for user: ${member.displayName}, file: ${this.filePath}`);
-  }
-
-  start() {
-    // Recording starts immediately in constructor; keep method for interface
-  }
-
-  stop() {
-    // No-op: keep recording until close
+    console.log(`Started CONTINUOUS recording for user: ${member.displayName}, file: ${this.filePath}`);
   }
 
   close() {
     const duration = (Date.now() - this.startTime) / 1000;
-    console.log(`Stopping recording for ${this.member.displayName}: ${this.totalBytes} bytes received over ${duration.toFixed(1)}s`);
+    console.log(`Stopping CONTINUOUS recording for ${this.member.displayName}: ${this.totalBytes} bytes received over ${duration.toFixed(1)}s`);
     
     try {
       if (this.audioStream) {
@@ -171,38 +163,53 @@ class ChannelState {
     this.receiver = this.connection.receiver;
     
     this.connection.on(VoiceConnectionStatus.Ready, () => {
-      console.log('Voice connection ready');
+      console.log('Voice connection ready - starting CONTINUOUS recording for all users');
       
-      // Handle speaking events for audio capture
-      this.receiver.speaking.on('start', (userId) => {
-        console.log(`User started speaking: ${userId}`);
-        
-        if (!this.states.has(userId)) {
-          // Get user info from guild members
-          const guild = client.guilds.cache.find(g => g.channels.cache.has(this.channelID));
-          const member = guild?.members.cache.get(userId);
-          if (member && !member.user.bot) {
-            // Subscribe to user's audio stream
-            const audioStream = this.receiver.subscribe(userId, {
-              end: {
-                behavior: 'manual'
-              }
-            });
-            
-            // Create user state with audio stream
-            this.states.set(userId, new UserState(this, member, audioStream));
-          }
-        }
-      });
-      
-      this.receiver.speaking.on('end', (userId) => {
-        console.log(`User stopped speaking: ${userId}`);
-        const userState = this.states.get(userId);
-        if (userState) {
-          userState.stop();
-        }
-      });
+      // Start recording ALL users in the channel immediately
+      this.startRecordingAllUsers();
     });
+  }
+
+  startRecordingAllUsers() {
+    // Find the guild and voice channel
+    const guild = client.guilds.cache.find(g => g.channels.cache.has(this.channelID));
+    const voiceChannel = guild?.channels.cache.get(this.channelID);
+    
+    if (!voiceChannel) {
+      console.error(`Voice channel ${this.channelID} not found`);
+      return;
+    }
+    
+    console.log(`Starting CONTINUOUS recording for ${voiceChannel.members.size} users in channel: ${voiceChannel.name}`);
+    
+    // Start recording for all users currently in the voice channel
+    voiceChannel.members.forEach((member) => {
+      if (!member.user.bot) {
+        this.addUserRecording(member);
+      }
+    });
+  }
+  
+  addUserRecording(member) {
+    if (this.states.has(member.user.id)) {
+      console.log(`User ${member.displayName} already being recorded`);
+      return;
+    }
+    
+    try {
+      // Subscribe to user's audio stream for CONTINUOUS recording
+      const audioStream = this.receiver.subscribe(member.user.id, {
+        end: {
+          behavior: 'manual'
+        }
+      });
+      
+      // Create user state with audio stream - will record EVERYTHING
+      this.states.set(member.user.id, new UserState(this, member, audioStream));
+      console.log(`Added CONTINUOUS recording for user: ${member.displayName}`);
+    } catch (error) {
+      console.error(`Failed to start recording for ${member.displayName}:`, error.message);
+    }
   }
 
   remove(user) {
@@ -210,10 +217,20 @@ class ChannelState {
       const s = this.states.get(user.id);
       this.states.delete(user.id);
       s.close();
+      console.log(`Stopped recording for user: ${user.tag || user.username}. ${this.states.size} users still recording.`);
     }
+    
+    // Only close channel if NO users left (not just when one user leaves)
     if (this.states.size === 0) {
+      console.log(`No users left in channel ${this.channelID} - finalizing recordings`);
       this.close();
     }
+  }
+  
+  // Force close all recordings (used by STOP command)
+  forceClose() {
+    console.log(`Force closing channel ${this.channelID} with ${this.states.size} active recordings`);
+    this.close();
   }
 
   close() {
@@ -342,13 +359,22 @@ class ChannelState {
 }
 
 client.on('voiceStateUpdate', (oldState, newState) => {
-  if (oldState.channelID === newState.channelID) {
-    return;
-  }
-  if (oldState.channelID) {
-    const state = CHANNELS.get(oldState.channelID);
+  // User left a channel
+  if (oldState.channelId && oldState.channelId !== newState.channelId) {
+    const state = CHANNELS.get(oldState.channelId);
     if (state) {
+      console.log(`User ${oldState.member.displayName} left channel ${oldState.channelId}`);
       state.remove(oldState.member.user);
+    }
+  }
+  
+  // User joined a channel where we're recording
+  if (newState.channelId && oldState.channelId !== newState.channelId) {
+    const state = CHANNELS.get(newState.channelId);
+    if (state && !newState.member.user.bot) {
+      console.log(`User ${newState.member.displayName} joined channel ${newState.channelId} - starting recording`);
+      // Add new user to continuous recording
+      state.addUserRecording(newState.member);
     }
   }
 });
@@ -404,7 +430,8 @@ client.on('interactionCreate', async (interaction) => {
           throw new Error('No active transcription in this channel');
         }
         
-        await state.close();
+        // Force stop all recordings regardless of user count
+        state.forceClose();
         CHANNELS.delete(voiceChannel.id);
         
         await interaction.editReply('\u{2705} Stopped transcription!');
