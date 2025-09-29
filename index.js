@@ -150,6 +150,7 @@ class ChannelState {
     this.webhook = webhook;
     this.channelID = connection.joinConfig.channelId;
     this.states = new Map();
+    this.finishedStates = new Map(); // Храним завершенные записи для финализации
     this.collected = [];
     this.isClosing = false;
 
@@ -216,8 +217,11 @@ class ChannelState {
     if (this.states.has(user.id)) {
       const s = this.states.get(user.id);
       this.states.delete(user.id);
+      
+      // Сохраняем завершенную запись для финализации
+      this.finishedStates.set(user.id, s);
       s.close();
-      console.log(`Stopped recording for user: ${user.tag || user.username}. ${this.states.size} users still recording.`);
+      console.log(`Moved recording for user: ${user.tag || user.username} to finished states. ${this.states.size} users still recording.`);
     }
     
     // Only close channel if NO users left (not just when one user leaves)
@@ -230,6 +234,14 @@ class ChannelState {
   // Force close all recordings (used by STOP command)
   forceClose() {
     console.log(`Force closing channel ${this.channelID} with ${this.states.size} active recordings`);
+    
+    // Перемещаем все активные записи в finished перед принудительным закрытием
+    this.states.forEach((s, userId) => {
+      this.finishedStates.set(userId, s);
+      s.close();
+    });
+    this.states.clear();
+    
     this.close();
   }
 
@@ -242,15 +254,27 @@ class ChannelState {
     
     (async () => {
       try {
-        console.log(`Starting finalization for channel ${this.channelID} with ${this.states.size} users`);
+        const activeCount = this.states.size;
+        const finishedCount = this.finishedStates.size;
+        const totalCount = activeCount + finishedCount;
         
-        // Close all user streams first and wait for files to finish writing
+        console.log(`Starting finalization for channel ${this.channelID} with ${activeCount} active + ${finishedCount} finished = ${totalCount} total recordings`);
+        
+        // Close all active user streams first and move them to finished
         const toClose = [];
-        this.states.forEach((s) => { 
-          console.log(`Closing recording for ${s.member.displayName}, file: ${s.filePath}`);
+        this.states.forEach((s, userId) => { 
+          console.log(`Closing active recording for ${s.member.displayName}, file: ${s.filePath}`);
           try { s.close(); } catch {}; 
+          this.finishedStates.set(userId, s);
           if (s.finishPromise) toClose.push(s.finishPromise); 
         });
+        this.states.clear(); // Очищаем активные
+        
+        // Добавляем promise'ы из уже завершенных записей
+        this.finishedStates.forEach((s) => {
+          if (s.finishPromise) toClose.push(s.finishPromise); 
+        });
+        
         try { await Promise.all(toClose); } catch {}
         
         // Wait a bit more to ensure WAV files are fully written
@@ -261,9 +285,10 @@ class ChannelState {
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
         const model = process.env.OPENAI_TRANSCRIBE_MODEL || 'whisper-1';
 
+        console.log(`Processing ${this.finishedStates.size} recordings for transcription`);
         const userTexts = [];
         const filesToDelete = [];
-        for (const [userId, s] of this.states) {
+        for (const [userId, s] of this.finishedStates) {
           try {
             // Check if file exists and has content
             if (!fs.existsSync(s.filePath)) {
@@ -289,7 +314,12 @@ class ChannelState {
             });
             const text = tr?.text || '';
             console.log(`Transcription completed for ${s.member.displayName}: ${text.length} characters`);
-            userTexts.push({ name: s.member.displayName, text });
+            if (text.length > 0) {
+              console.log(`Transcription preview for ${s.member.displayName}: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
+              userTexts.push({ name: s.member.displayName, text });
+            } else {
+              console.log(`WARNING: Empty transcription for ${s.member.displayName}, file size: ${fileStats.size} bytes`);
+            }
             filesToDelete.push(s.filePath);
           } catch (e) {
             console.error(`Transcription error for user ${s.member.displayName} (${userId}):`, e.message);
@@ -342,6 +372,8 @@ class ChannelState {
         }
       } catch (err) {
         console.error('Finalize/post error', err);
+        // Reset the closing flag on error too
+        this.isClosing = false;
       } finally {
         try { 
           if (this.webhook) {
@@ -353,6 +385,9 @@ class ChannelState {
         if (this.connection.status !== 4) {
           try { this.connection.disconnect(); } catch {}
         }
+        
+        // Reset the closing flag
+        this.isClosing = false;
       }
     })();
   }
