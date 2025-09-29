@@ -1,18 +1,31 @@
-FROM node:22-alpine
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install production deps
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev || npm i --omit=dev
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libopus0 \
+    libffi-dev \
+    libnacl-dev \
+    python3-dev \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy source
-COPY . .
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY main.py .
+COPY prompt.md .
 
 # Create recordings directory
 RUN mkdir -p recordings
 
-CMD ["node", "index.js"]
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
-
-
+# Run the bot
+CMD ["python", "main.py"]

@@ -1,0 +1,25 @@
+# Discord Bot Core
+discord.py[voice]==2.3.2
+
+# Voice recording extension
+git+https://github.com/imayhaveborkedit/discord-ext-voice-recv
+
+# OpenAI integration
+openai==1.3.0
+
+# Audio processing
+pydub==0.25.1
+wave
+
+# Async file operations
+aiofiles==23.2.1
+
+# Environment variables
+python-dotenv==1.0.0
+
+# Cryptography for voice
+PyNaCl==1.5.0
+cffi==1.16.0
+
+# Optional: FFmpeg Python wrapper
+ffmpeg-python==0.2.0
