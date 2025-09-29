@@ -9,7 +9,6 @@ openai>=1.30.0
 
 # Audio processing
 pydub==0.25.1
-wave
 
 # Async file operations
 aiofiles==23.2.1
