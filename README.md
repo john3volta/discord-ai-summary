@@ -190,15 +190,3 @@ docker compose logs -f scribe | grep -E "(ERROR|WARNING|DEBUG)"
 ## License
 
 MIT License - Copyright (c) 2025 john3volta
-
-## Contributing
-
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open Pull Request
-
----
-
-**Built with ❤️ using Python 3.11+, discord.py, and OpenAI APIs**

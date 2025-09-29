@@ -1,11 +1,11 @@
-# Discord Bot Core
-discord.py[voice]==2.3.2
+# Discord Bot Core (updated for voice-recv compatibility)
+discord.py[voice]>=2.5.0
 
 # Voice recording extension
 git+https://github.com/imayhaveborkedit/discord-ext-voice-recv
 
-# OpenAI integration
-openai==1.3.0
+# OpenAI integration (updated)
+openai>=1.30.0
 
 # Audio processing
 pydub==0.25.1
