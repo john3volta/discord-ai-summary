@@ -91,10 +91,11 @@ client.on('guildCreate', async (guild) => {
 const CHANNELS = new Map();
 
 class UserState {
-  constructor(channelState, member, audioStream) {
+  constructor(channelState, member, audioStream, audioMode = 'pcm') {
     this.channelState = channelState;
     this.member = member;
     this.audioStream = audioStream;
+    this.audioMode = audioMode;
     this.totalBytes = 0;
     this.startTime = Date.now();
 
@@ -120,24 +121,37 @@ class UserState {
         readableLength: audioStream.readableLength
       });
       
-        // Try to create Opus decoder
+        // Try to create Opus decoder only if we're in opus mode
         let opusDecoder = null;
-        try {
-          const opus = require('@discordjs/opus');
-          console.log(`[AUDIO DEBUG] Available in @discordjs/opus:`, Object.keys(opus));
-          
-          if (opus.OpusDecoder) {
-            opusDecoder = new opus.OpusDecoder(48000, 1);
-            console.log(`[AUDIO DEBUG] OpusDecoder created successfully`);
-          } else if (opus.decode) {
-            console.log(`[AUDIO DEBUG] Using opus.decode method`);
-            opusDecoder = { decode: opus.decode };
-          } else {
-            console.log(`[AUDIO WARNING] No Opus decoder found, will try PCM mode`);
+        if (this.audioMode === 'opus') {
+          try {
+            const opus = require('@discordjs/opus');
+            console.log(`[AUDIO DEBUG] Available in @discordjs/opus:`, Object.keys(opus));
+            
+            if (opus.OpusDecoder) {
+              opusDecoder = new opus.OpusDecoder(48000, 1);
+              console.log(`[AUDIO DEBUG] @discordjs/opus OpusDecoder created successfully`);
+            } else if (opus.decode) {
+              console.log(`[AUDIO DEBUG] Using @discordjs/opus decode method`);
+              opusDecoder = { decode: opus.decode };
+            } else {
+              console.log(`[AUDIO WARNING] No decoder found in @discordjs/opus`);
+            }
+          } catch (error) {
+            console.log(`[AUDIO ERROR] Failed to load @discordjs/opus:`, error.message);
+            
+            // Try opusscript as fallback
+            try {
+              const OpusScript = require('opusscript');
+              opusDecoder = new OpusScript(48000, 1);
+              console.log(`[AUDIO DEBUG] opusscript decoder created successfully`);
+            } catch (opusScriptError) {
+              console.log(`[AUDIO ERROR] Failed to load opusscript:`, opusScriptError.message);
+              console.log(`[AUDIO DEBUG] No Opus decoder available, will record raw Opus data`);
+            }
           }
-        } catch (error) {
-          console.log(`[AUDIO ERROR] Failed to load Opus decoder:`, error.message);
-          console.log(`[AUDIO DEBUG] Falling back to PCM mode`);
+        } else {
+          console.log(`[AUDIO DEBUG] Using PCM mode - no Opus decoder needed`);
         }
       
       audioStream.on('data', (chunk) => {
@@ -147,66 +161,88 @@ class UserState {
         if (!this.chunkSizes) this.chunkSizes = [];
         this.chunkSizes.push(chunk.length);
         
-        // Enhanced logging for debugging
-        if (this.totalBytes < 10000) {
-          console.log(`[AUDIO DEBUG] ${this.member.displayName}: received ${chunk.length} bytes Opus packet, total: ${this.totalBytes}`);
-          
-          // Log first few bytes of the chunk to check for patterns
-          if (chunk.length > 0) {
-            const preview = Array.from(chunk.slice(0, Math.min(8, chunk.length)))
-              .map(b => b.toString(16).padStart(2, '0'))
-              .join(' ');
-            console.log(`[AUDIO DEBUG] ${this.member.displayName}: Opus packet bytes: ${preview}`);
-          }
-        }
-        
-        if (opusDecoder) {
-          try {
-            // Skip silence frames (all zeros)
-            const isNullPacket = chunk.every(byte => byte === 0);
+        // Process audio data based on mode
+        if (this.audioMode === 'opus') {
+          // Enhanced logging for Opus mode
+          if (this.totalBytes < 10000) {
+            console.log(`[AUDIO DEBUG] ${this.member.displayName}: received ${chunk.length} bytes Opus packet, total: ${this.totalBytes}`);
             
-            if (!isNullPacket && chunk.length > 0) {
-              // Try to decode non-null Opus packet to PCM
-              const pcmData = opusDecoder.decode(chunk);
-              if (pcmData && pcmData.length > 0) {
-                // Write decoded PCM data to WAV file
-                this.writer.write(pcmData);
-                
-                if (this.totalBytes < 10000) {
-                  console.log(`[AUDIO DEBUG] ${this.member.displayName}: decoded ${pcmData.length} bytes PCM from ${chunk.length} bytes Opus`);
+            // Log first few bytes of the chunk to check for patterns
+            if (chunk.length > 0) {
+              const preview = Array.from(chunk.slice(0, Math.min(8, chunk.length)))
+                .map(b => b.toString(16).padStart(2, '0'))
+                .join(' ');
+              console.log(`[AUDIO DEBUG] ${this.member.displayName}: Opus packet bytes: ${preview}`);
+            }
+          }
+          
+          if (opusDecoder) {
+            try {
+              // Skip silence frames (all zeros)
+              const isNullPacket = chunk.every(byte => byte === 0);
+              
+              if (!isNullPacket && chunk.length > 0) {
+                // Try to decode non-null Opus packet to PCM
+                const pcmData = opusDecoder.decode(chunk);
+                if (pcmData && pcmData.length > 0) {
+                  // Write decoded PCM data to WAV file
+                  this.writer.write(pcmData);
+                  
+                  if (this.totalBytes < 10000) {
+                    console.log(`[AUDIO DEBUG] ${this.member.displayName}: decoded ${pcmData.length} bytes PCM from ${chunk.length} bytes Opus`);
+                  }
+                } else {
+                  if (this.totalBytes < 10000) {
+                    console.log(`[AUDIO DEBUG] ${this.member.displayName}: failed to decode ${chunk.length} bytes Opus packet`);
+                  }
                 }
               } else {
                 if (this.totalBytes < 10000) {
-                  console.log(`[AUDIO DEBUG] ${this.member.displayName}: failed to decode ${chunk.length} bytes Opus packet`);
+                  console.log(`[AUDIO DEBUG] ${this.member.displayName}: skipped silence frame (${chunk.length} bytes)`);
                 }
+              }
+            } catch (error) {
+              console.log(`[AUDIO ERROR] ${this.member.displayName}: Failed to decode Opus packet:`, error.message);
+              
+              // Fallback: disable Opus decoder and use raw data
+              opusDecoder = null;
+              console.log(`[AUDIO DEBUG] ${this.member.displayName}: Disabling Opus decoder, falling back to raw mode`);
+            }
+          }
+          
+          // If no Opus decoder or decoding failed, write raw Opus data
+          if (!opusDecoder) {
+            // Skip completely silent chunks
+            const isCompletelyQuiet = chunk.every(byte => byte === 0);
+            if (!isCompletelyQuiet) {
+              this.writer.write(chunk);
+              if (this.totalBytes < 10000) {
+                console.log(`[AUDIO DEBUG] ${this.member.displayName}: wrote ${chunk.length} bytes raw Opus data`);
               }
             } else {
               if (this.totalBytes < 10000) {
-                console.log(`[AUDIO DEBUG] ${this.member.displayName}: skipped silence frame (${chunk.length} bytes)`);
+                console.log(`[AUDIO DEBUG] ${this.member.displayName}: skipped silent Opus packet (${chunk.length} bytes)`);
               }
             }
-          } catch (error) {
-            console.log(`[AUDIO ERROR] ${this.member.displayName}: Failed to decode Opus packet:`, error.message);
-            
-            // Fallback: disable Opus decoder and use raw data
-            opusDecoder = null;
-            console.log(`[AUDIO DEBUG] ${this.member.displayName}: Disabling Opus decoder, falling back to raw mode`);
           }
-        }
-        
-        // If no Opus decoder or decoding failed, use raw data (probably already PCM)
-        if (!opusDecoder) {
-          // Skip completely silent chunks
-          const isCompletelyQuiet = chunk.every(byte => byte === 0);
-          if (!isCompletelyQuiet) {
-            this.writer.write(chunk);
-            if (this.totalBytes < 10000) {
-              console.log(`[AUDIO DEBUG] ${this.member.displayName}: wrote ${chunk.length} bytes raw audio`);
+        } else {
+          // PCM mode - data is already decoded
+          if (this.totalBytes < 10000) {
+            console.log(`[AUDIO DEBUG] ${this.member.displayName}: received ${chunk.length} bytes PCM data, total: ${this.totalBytes}`);
+            
+            // Log first few bytes for PCM mode too
+            if (chunk.length > 0) {
+              const preview = Array.from(chunk.slice(0, Math.min(8, chunk.length)))
+                .map(b => b.toString(16).padStart(2, '0'))
+                .join(' ');
+              console.log(`[AUDIO DEBUG] ${this.member.displayName}: PCM data bytes: ${preview}`);
             }
-          } else {
-            if (this.totalBytes < 10000) {
-              console.log(`[AUDIO DEBUG] ${this.member.displayName}: skipped silent chunk (${chunk.length} bytes)`);
-            }
+          }
+          
+          // Write PCM data directly to WAV file
+          this.writer.write(chunk);
+          if (this.totalBytes < 10000) {
+            console.log(`[AUDIO DEBUG] ${this.member.displayName}: wrote ${chunk.length} bytes PCM data to WAV`);
           }
         }
       });
@@ -310,6 +346,7 @@ class ChannelState {
       // Subscribe to user's audio stream for CONTINUOUS recording
       // Try Opus mode first, fallback to PCM if needed
       let audioStream;
+      let audioMode = 'opus';
       try {
         console.log(`[AUDIO DEBUG] Trying to subscribe to ${member.displayName} in opus mode`);
         audioStream = this.receiver.subscribe(member.user.id, {
@@ -321,6 +358,7 @@ class ChannelState {
         console.log(`[AUDIO DEBUG] Successfully subscribed to ${member.displayName} in opus mode`);
       } catch (error) {
         console.log(`[AUDIO WARNING] Failed to subscribe in opus mode for ${member.displayName}, trying PCM:`, error.message);
+        audioMode = 'pcm';
         audioStream = this.receiver.subscribe(member.user.id, {
           mode: 'pcm', // Fallback to PCM
           end: {
@@ -331,8 +369,8 @@ class ChannelState {
       }
       
       // Create user state with audio stream - will record EVERYTHING
-      this.states.set(member.user.id, new UserState(this, member, audioStream));
-      console.log(`Added CONTINUOUS recording for user: ${member.displayName}`);
+      this.states.set(member.user.id, new UserState(this, member, audioStream, audioMode));
+      console.log(`Added CONTINUOUS recording for user: ${member.displayName} in ${audioMode} mode`);
     } catch (error) {
       console.error(`Failed to start recording for ${member.displayName}:`, error.message);
     }
