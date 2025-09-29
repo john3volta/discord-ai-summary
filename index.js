@@ -105,7 +105,7 @@ class UserState {
       recDir,
       `${channelState.channelID}-${member.user.id}-${Date.now()}.wav`
     );
-    this.writer = new wav.Writer({ sampleRate: 16000, channels: 1, bitDepth: 16 });
+    this.writer = new wav.Writer({ sampleRate: 48000, channels: 1, bitDepth: 16 });
     this.fileOut = fs.createWriteStream(this.filePath);
     this.writer.pipe(this.fileOut);
     
@@ -144,8 +144,8 @@ class UserState {
     const duration = (Date.now() - this.startTime) / 1000;
     console.log(`Stopping CONTINUOUS recording for ${this.member.displayName}: ${this.totalBytes} bytes received over ${duration.toFixed(1)}s`);
     
-    // Calculate expected audio size
-    const expectedBytes = duration * 16000 * 1 * 2; // 16kHz, 16-bit mono
+    // Calculate expected audio size  
+    const expectedBytes = duration * 48000 * 1 * 2; // 48kHz, 16-bit mono PCM
     const efficiency = (this.totalBytes / expectedBytes * 100).toFixed(1);
     console.log(`[AUDIO DEBUG] Expected: ${Math.round(expectedBytes)} bytes, Got: ${this.totalBytes} bytes (${efficiency}% efficiency)`);
     
@@ -230,6 +230,7 @@ class ChannelState {
     try {
       // Subscribe to user's audio stream for CONTINUOUS recording
       const audioStream = this.receiver.subscribe(member.user.id, {
+        mode: 'pcm',
         end: {
           behavior: 'manual'
         }
