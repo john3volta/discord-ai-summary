@@ -105,6 +105,7 @@ class UserState {
       recDir,
       `${channelState.channelID}-${member.user.id}-${Date.now()}.wav`
     );
+    // Use native Discord sample rate (48kHz) for accurate recording
     this.writer = new wav.Writer({ sampleRate: 48000, channels: 1, bitDepth: 16 });
     this.fileOut = fs.createWriteStream(this.filePath);
     this.writer.pipe(this.fileOut);
@@ -121,14 +122,36 @@ class UserState {
       
       audioStream.on('data', (chunk) => {
         this.totalBytes += chunk.length;
-        // Log first few chunks to debug audio quality
-        if (this.totalBytes < 10000) {
-          console.log(`[AUDIO DEBUG] ${this.member.displayName}: received ${chunk.length} bytes, total: ${this.totalBytes}`);
-        }
         
         // Track chunk sizes for analysis
         if (!this.chunkSizes) this.chunkSizes = [];
         this.chunkSizes.push(chunk.length);
+        
+        // Enhanced logging for debugging
+        if (this.totalBytes < 10000) {
+          console.log(`[AUDIO DEBUG] ${this.member.displayName}: received ${chunk.length} bytes, total: ${this.totalBytes}`);
+          
+          // Log first few bytes of the chunk to check for patterns
+          if (chunk.length > 0) {
+            const preview = Array.from(chunk.slice(0, Math.min(8, chunk.length)))
+              .map(b => b.toString(16).padStart(2, '0'))
+              .join(' ');
+            console.log(`[AUDIO DEBUG] ${this.member.displayName}: first bytes: ${preview}`);
+          }
+        }
+        
+        // Check for suspicious patterns (like all zeros or identical chunks)
+        if (!this.lastChunk) this.lastChunk = null;
+        if (this.lastChunk && chunk.length === this.lastChunk.length && chunk.equals(this.lastChunk)) {
+          if (!this.identicalChunks) this.identicalChunks = 0;
+          this.identicalChunks++;
+          if (this.identicalChunks === 3) {
+            console.log(`[AUDIO WARNING] ${this.member.displayName}: Detected identical audio chunks - possible stuck audio data`);
+          }
+        } else {
+          this.identicalChunks = 0;
+        }
+        this.lastChunk = Buffer.from(chunk);
       });
       audioStream.pipe(this.writer, { end: false });
     }
@@ -229,8 +252,9 @@ class ChannelState {
     
     try {
       // Subscribe to user's audio stream for CONTINUOUS recording
+      // Use opus mode to get raw opus packets, then decode to PCM at 16kHz
       const audioStream = this.receiver.subscribe(member.user.id, {
-        mode: 'pcm',
+        mode: 'pcm', // We'll process PCM but at the right sample rate
         end: {
           behavior: 'manual'
         }
@@ -337,6 +361,11 @@ class ChannelState {
             const fileStats = fs.statSync(s.filePath);
             console.log(`Processing file for ${s.member.displayName}: ${s.filePath} (${fileStats.size} bytes)`);
             
+            // Log audio recording stats
+            if (s.identicalChunks > 0) {
+              console.log(`[AUDIO WARNING] ${s.member.displayName}: Had ${s.identicalChunks} consecutive identical chunks`);
+            }
+            
             // Skip files that are too small (less than 1KB usually means no actual audio)
             if (fileStats.size < 1024) {
               console.log(`Skipping transcription for ${s.member.displayName}: file too small (${fileStats.size} bytes)`);
@@ -374,24 +403,72 @@ class ChannelState {
               const nonZeroSamples = samples.filter(s => Math.abs(s) > 10).length;
               const silenceRatio = (samples.length - nonZeroSamples) / samples.length;
               console.log(`[AUDIO DEBUG] Silence ratio for ${s.member.displayName}: ${(silenceRatio * 100).toFixed(1)}% (should be < 80%)`);
+              
+              // Check for suspicious patterns that might indicate corrupted/fake audio
+              const firstSample = samples[0];
+              const identicalSamples = samples.filter(s => s === firstSample).length;
+              const identicalRatio = identicalSamples / samples.length;
+              if (identicalRatio > 0.5) {
+                console.log(`[AUDIO WARNING] ${s.member.displayName}: ${(identicalRatio * 100).toFixed(1)}% of samples are identical (${firstSample}) - possible corrupted audio`);
+              }
+              
+              // Log first few samples for pattern analysis
+              const samplePreview = Array.from(samples.slice(0, 20)).join(', ');
+              console.log(`[AUDIO DEBUG] ${s.member.displayName}: First 20 samples: ${samplePreview}`);
+              
+              // Check for clipping (max/min values that indicate overload)
+              const clippedSamples = samples.filter(s => Math.abs(s) >= 32767).length;
+              const clippingRatio = clippedSamples / samples.length;
+              if (clippingRatio > 0.01) { // More than 1% clipped
+                console.log(`[AUDIO WARNING] ${s.member.displayName}: ${(clippingRatio * 100).toFixed(1)}% of samples are clipped - possible audio overload`);
+              }
             } catch (e) {
               console.log(`[AUDIO DEBUG] Could not read WAV format for ${s.member.displayName}:`, e.message);
             }
 
-            const fileStream = fs.createReadStream(s.filePath);
-            const tr = await openai.audio.transcriptions.create({
-              file: fileStream,
-              model,
-              language: (process.env.SPEECH_LANG || 'ru'),
-            });
-            const text = tr?.text || '';
-            console.log(`[DEBUG] Transcription completed for ${s.member.displayName}: ${text.length} characters`);
-            if (text.length > 0) {
-              console.log(`[DEBUG] Transcription preview for ${s.member.displayName}: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
-              userTexts.push({ name: s.member.displayName, text });
-              console.log(`[DEBUG] Added transcription to userTexts, total: ${userTexts.length}`);
+            // Check for problematic audio before transcription
+            let skipTranscription = false;
+            const audioBuffer = fs.readFileSync(s.filePath);
+            const audioData = audioBuffer.slice(44); // Skip WAV header
+            if (audioData.length > 0) {
+              const samples = new Int16Array(audioData.buffer, audioData.byteOffset, audioData.length / 2);
+              
+              // Check if more than 90% of samples are identical
+              const firstSample = samples[0];
+              const identicalSamples = samples.filter(s => s === firstSample).length;
+              const identicalRatio = identicalSamples / samples.length;
+              
+              if (identicalRatio > 0.9) {
+                console.log(`[AUDIO WARNING] Skipping transcription for ${s.member.displayName}: ${(identicalRatio * 100).toFixed(1)}% identical samples (likely corrupted)`);
+                skipTranscription = true;
+              }
+              
+              // Check if all samples are near zero (silence)
+              const nonSilentSamples = samples.filter(s => Math.abs(s) > 50).length;
+              if (nonSilentSamples / samples.length < 0.01) {
+                console.log(`[AUDIO WARNING] Skipping transcription for ${s.member.displayName}: mostly silence detected`);
+                skipTranscription = true;
+              }
+            }
+
+            if (!skipTranscription) {
+              const fileStream = fs.createReadStream(s.filePath);
+              const tr = await openai.audio.transcriptions.create({
+                file: fileStream,
+                model,
+                language: (process.env.SPEECH_LANG || 'ru'),
+              });
+              const text = tr?.text || '';
+              console.log(`[DEBUG] Transcription completed for ${s.member.displayName}: ${text.length} characters`);
+              if (text.length > 0) {
+                console.log(`[DEBUG] Transcription preview for ${s.member.displayName}: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
+                userTexts.push({ name: s.member.displayName, text });
+                console.log(`[DEBUG] Added transcription to userTexts, total: ${userTexts.length}`);
+              } else {
+                console.log(`[DEBUG] WARNING: Empty transcription for ${s.member.displayName}, file size: ${fileStats.size} bytes`);
+              }
             } else {
-              console.log(`[DEBUG] WARNING: Empty transcription for ${s.member.displayName}, file size: ${fileStats.size} bytes`);
+              console.log(`[DEBUG] Skipped transcription for ${s.member.displayName} due to audio quality issues`);
             }
             filesToDelete.push(s.filePath);
           } catch (e) {
