@@ -113,6 +113,10 @@ class UserState {
     if (audioStream) {
       audioStream.on('data', (chunk) => {
         this.totalBytes += chunk.length;
+        // Log first few chunks to debug audio quality
+        if (this.totalBytes < 10000) {
+          console.log(`[AUDIO DEBUG] ${this.member.displayName}: received ${chunk.length} bytes, total: ${this.totalBytes}`);
+        }
       });
       audioStream.pipe(this.writer, { end: false });
     }
@@ -127,6 +131,11 @@ class UserState {
   close() {
     const duration = (Date.now() - this.startTime) / 1000;
     console.log(`Stopping CONTINUOUS recording for ${this.member.displayName}: ${this.totalBytes} bytes received over ${duration.toFixed(1)}s`);
+    
+    // Calculate expected audio size
+    const expectedBytes = duration * 16000 * 2; // 16kHz, 16-bit mono
+    const efficiency = (this.totalBytes / expectedBytes * 100).toFixed(1);
+    console.log(`[AUDIO DEBUG] Expected: ${Math.round(expectedBytes)} bytes, Got: ${this.totalBytes} bytes (${efficiency}% efficiency)`);
     
     try {
       if (this.audioStream) {
@@ -312,6 +321,22 @@ class ChannelState {
               console.log(`Skipping transcription for ${s.member.displayName}: file too small (${fileStats.size} bytes)`);
               filesToDelete.push(s.filePath);
               continue;
+            }
+
+            // Check WAV file parameters
+            try {
+              const wav = require('wav');
+              const reader = new wav.Reader();
+              const wavInfo = await new Promise((resolve, reject) => {
+                reader.on('format', (format) => {
+                  console.log(`[AUDIO DEBUG] WAV format for ${s.member.displayName}:`, format);
+                  resolve(format);
+                });
+                reader.on('error', reject);
+                fs.createReadStream(s.filePath).pipe(reader);
+              });
+            } catch (e) {
+              console.log(`[AUDIO DEBUG] Could not read WAV format for ${s.member.displayName}:`, e.message);
             }
 
             const fileStream = fs.createReadStream(s.filePath);
