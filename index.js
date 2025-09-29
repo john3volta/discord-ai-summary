@@ -125,6 +125,10 @@ class UserState {
         if (this.totalBytes < 10000) {
           console.log(`[AUDIO DEBUG] ${this.member.displayName}: received ${chunk.length} bytes, total: ${this.totalBytes}`);
         }
+        
+        // Track chunk sizes for analysis
+        if (!this.chunkSizes) this.chunkSizes = [];
+        this.chunkSizes.push(chunk.length);
       });
       audioStream.pipe(this.writer, { end: false });
     }
@@ -144,6 +148,14 @@ class UserState {
     const expectedBytes = duration * 16000 * 1 * 2; // 16kHz, 16-bit mono
     const efficiency = (this.totalBytes / expectedBytes * 100).toFixed(1);
     console.log(`[AUDIO DEBUG] Expected: ${Math.round(expectedBytes)} bytes, Got: ${this.totalBytes} bytes (${efficiency}% efficiency)`);
+    
+    // Analyze chunk sizes
+    if (this.chunkSizes && this.chunkSizes.length > 0) {
+      const avgChunkSize = (this.chunkSizes.reduce((a, b) => a + b, 0) / this.chunkSizes.length).toFixed(1);
+      const minChunkSize = Math.min(...this.chunkSizes);
+      const maxChunkSize = Math.max(...this.chunkSizes);
+      console.log(`[AUDIO DEBUG] Chunk analysis: avg=${avgChunkSize} bytes, min=${minChunkSize}, max=${maxChunkSize}, count=${this.chunkSizes.length}`);
+    }
     
     try {
       if (this.audioStream) {
@@ -348,8 +360,19 @@ class ChannelState {
               const audioBuffer = fs.readFileSync(s.filePath);
               const audioData = audioBuffer.slice(44); // Skip WAV header
               const samples = new Int16Array(audioData.buffer, audioData.byteOffset, audioData.length / 2);
-              const maxAmplitude = Math.max(...samples.map(Math.abs));
+              
+              // Calculate max amplitude more efficiently
+              let maxAmplitude = 0;
+              for (let i = 0; i < samples.length; i++) {
+                const abs = Math.abs(samples[i]);
+                if (abs > maxAmplitude) maxAmplitude = abs;
+              }
               console.log(`[AUDIO DEBUG] Max amplitude for ${s.member.displayName}: ${maxAmplitude} (should be > 100 for speech)`);
+              
+              // Check for silence (all zeros or very low values)
+              const nonZeroSamples = samples.filter(s => Math.abs(s) > 10).length;
+              const silenceRatio = (samples.length - nonZeroSamples) / samples.length;
+              console.log(`[AUDIO DEBUG] Silence ratio for ${s.member.displayName}: ${(silenceRatio * 100).toFixed(1)}% (should be < 80%)`);
             } catch (e) {
               console.log(`[AUDIO DEBUG] Could not read WAV format for ${s.member.displayName}:`, e.message);
             }
