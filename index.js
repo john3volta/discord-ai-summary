@@ -105,7 +105,7 @@ class UserState {
       recDir,
       `${channelState.channelID}-${member.user.id}-${Date.now()}.wav`
     );
-    this.writer = new wav.Writer({ sampleRate: 48000, channels: 2, bitDepth: 16 });
+    this.writer = new wav.Writer({ sampleRate: 48000, channels: 1, bitDepth: 16 });
     this.fileOut = fs.createWriteStream(this.filePath);
     this.writer.pipe(this.fileOut);
     
@@ -133,7 +133,7 @@ class UserState {
     console.log(`Stopping CONTINUOUS recording for ${this.member.displayName}: ${this.totalBytes} bytes received over ${duration.toFixed(1)}s`);
     
     // Calculate expected audio size
-    const expectedBytes = duration * 16000 * 2; // 16kHz, 16-bit mono
+    const expectedBytes = duration * 48000 * 1 * 2; // 48kHz, 16-bit mono
     const efficiency = (this.totalBytes / expectedBytes * 100).toFixed(1);
     console.log(`[AUDIO DEBUG] Expected: ${Math.round(expectedBytes)} bytes, Got: ${this.totalBytes} bytes (${efficiency}% efficiency)`);
     
@@ -335,6 +335,13 @@ class ChannelState {
                 reader.on('error', reject);
                 fs.createReadStream(s.filePath).pipe(reader);
               });
+              
+              // Check if audio has actual content (not just silence/artifacts)
+              const audioBuffer = fs.readFileSync(s.filePath);
+              const audioData = audioBuffer.slice(44); // Skip WAV header
+              const samples = new Int16Array(audioData.buffer, audioData.byteOffset, audioData.length / 2);
+              const maxAmplitude = Math.max(...samples.map(Math.abs));
+              console.log(`[AUDIO DEBUG] Max amplitude for ${s.member.displayName}: ${maxAmplitude} (should be > 100 for speech)`);
             } catch (e) {
               console.log(`[AUDIO DEBUG] Could not read WAV format for ${s.member.displayName}:`, e.message);
             }
