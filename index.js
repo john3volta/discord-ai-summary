@@ -157,6 +157,7 @@ class ChannelState {
     const { VoiceConnectionStatus, AudioReceiveStream } = require('@discordjs/voice');
 
     this.connection.on(VoiceConnectionStatus.Disconnected, () => {
+      console.log(`[DEBUG] Voice connection disconnected for channel ${this.channelID} - calling close()`);
       CHANNELS.delete(this.channelID);
       this.close();
     });
@@ -214,6 +215,9 @@ class ChannelState {
   }
 
   remove(user) {
+    console.log(`[DEBUG] remove() called for user: ${user.tag || user.username}, channel: ${this.channelID}`);
+    console.log(`[DEBUG] Current states: ${this.states.size}, finished: ${this.finishedStates.size}, isClosing: ${this.isClosing}`);
+    
     if (this.states.has(user.id)) {
       const s = this.states.get(user.id);
       this.states.delete(user.id);
@@ -226,8 +230,10 @@ class ChannelState {
     
     // Only close channel if NO users left (not just when one user leaves)
     if (this.states.size === 0) {
-      console.log(`No users left in channel ${this.channelID} - finalizing recordings`);
+      console.log(`[DEBUG] No users left in channel ${this.channelID} - calling close(), isClosing: ${this.isClosing}`);
       this.close();
+    } else {
+      console.log(`[DEBUG] Still ${this.states.size} users recording, not closing channel yet`);
     }
   }
   
@@ -246,10 +252,12 @@ class ChannelState {
   }
 
   close() {
+    console.log(`[DEBUG] close() called for channel ${this.channelID}, isClosing: ${this.isClosing}`);
     if (this.isClosing) {
-      console.log(`Finalization already in progress for channel ${this.channelID}`);
+      console.log(`[DEBUG] Finalization already in progress for channel ${this.channelID} - skipping`);
       return;
     }
+    console.log(`[DEBUG] Setting isClosing=true for channel ${this.channelID}`);
     this.isClosing = true;
     
     (async () => {
@@ -313,12 +321,13 @@ class ChannelState {
               language: (process.env.SPEECH_LANG || 'ru'),
             });
             const text = tr?.text || '';
-            console.log(`Transcription completed for ${s.member.displayName}: ${text.length} characters`);
+            console.log(`[DEBUG] Transcription completed for ${s.member.displayName}: ${text.length} characters`);
             if (text.length > 0) {
-              console.log(`Transcription preview for ${s.member.displayName}: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
+              console.log(`[DEBUG] Transcription preview for ${s.member.displayName}: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
               userTexts.push({ name: s.member.displayName, text });
+              console.log(`[DEBUG] Added transcription to userTexts, total: ${userTexts.length}`);
             } else {
-              console.log(`WARNING: Empty transcription for ${s.member.displayName}, file size: ${fileStats.size} bytes`);
+              console.log(`[DEBUG] WARNING: Empty transcription for ${s.member.displayName}, file size: ${fileStats.size} bytes`);
             }
             filesToDelete.push(s.filePath);
           } catch (e) {
@@ -342,24 +351,35 @@ class ChannelState {
           lines.push('');
         }
         const transcript = lines.join('\n');
+        console.log(`[DEBUG] Created transcript with ${lines.length} lines, total length: ${transcript.length} characters`);
 
         // Summary via ChatGPT (if configured)
         let summary = '';
-        try { summary = await summarizeTranscript(transcript); } catch (e) { console.error('Summary error', e); }
+        console.log(`[DEBUG] Creating summary for transcript...`);
+        try { 
+          summary = await summarizeTranscript(transcript); 
+          console.log(`[DEBUG] Summary created: ${summary.length} characters`);
+        } catch (e) { 
+          console.error('[DEBUG] Summary error', e); 
+        }
 
         if (summary && summary.length > 0) {
+          console.log(`[DEBUG] Sending summary via webhook: ${summary.length} characters`);
           try {
             await this.webhook.send(summary);
+            console.log(`[DEBUG] Summary sent successfully`);
           } catch (err) {
-            console.error('Failed to send summary via webhook:', err.message);
+            console.error('[DEBUG] Failed to send summary via webhook:', err.message);
           }
         }
         if (transcript && transcript.length > 0) {
+          console.log(`[DEBUG] Sending transcript via webhook: ${transcript.length} characters`);
           try {
             const buf = Buffer.from(transcript, 'utf8');
             await this.webhook.send({ files: [{ attachment: buf, name: 'transcript.md' }] });
+            console.log(`[DEBUG] Transcript sent successfully`);
           } catch (err) {
-            console.error('Failed to send transcript via webhook:', err.message);
+            console.error('[DEBUG] Failed to send transcript via webhook:', err.message);
           }
         }
 
@@ -387,6 +407,7 @@ class ChannelState {
         }
         
         // Reset the closing flag
+        console.log(`[DEBUG] Finalization completed for channel ${this.channelID} - resetting isClosing flag`);
         this.isClosing = false;
       }
     })();
@@ -394,12 +415,16 @@ class ChannelState {
 }
 
 client.on('voiceStateUpdate', (oldState, newState) => {
+  console.log(`[DEBUG] voiceStateUpdate: ${oldState.member.displayName} from ${oldState.channelId} to ${newState.channelId}`);
+  
   // User left a channel
   if (oldState.channelId && oldState.channelId !== newState.channelId) {
     const state = CHANNELS.get(oldState.channelId);
     if (state) {
-      console.log(`User ${oldState.member.displayName} left channel ${oldState.channelId}`);
+      console.log(`[DEBUG] User ${oldState.member.displayName} left channel ${oldState.channelId} - calling state.remove()`);
       state.remove(oldState.member.user);
+    } else {
+      console.log(`[DEBUG] No state found for channel ${oldState.channelId}`);
     }
   }
   
