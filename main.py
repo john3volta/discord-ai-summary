@@ -12,6 +12,7 @@ import sys
 import time
 import wave
 from pathlib import Path
+from collections import defaultdict
 
 import discord
 from discord.ext import commands, voice_recv
@@ -31,214 +32,117 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class UniversalAudioSink(voice_recv.AudioSink):
-    """Universal audio sink that captures all audio regardless of user association."""
+class MultiUserAudioSink(voice_recv.AudioSink):
+    """Unified audio sink that captures all users in one sink."""
     
     def __init__(self, recordings_dir: Path):
         super().__init__()
-        self.audio_data = []
-        self.total_bytes = 0
+        self.recordings_dir = recordings_dir
+        self.user_audio = defaultdict(list)  # user_id -> [audio_chunks]
+        self.user_info = {}  # user_id -> display_name
+        self.ssrc_to_user = {}  # ssrc -> user_id
+        self.total_bytes = defaultdict(int)
         self.start_time = time.time()
         
-        timestamp = int(time.time() * 1000)
-        self.filename = f"universal_{timestamp}.wav"
-        self.filepath = recordings_dir / self.filename
-        
-        logger.info(f"🌐 Created universal audio sink")
+        logger.info("🎙️ Created multi-user audio sink")
     
     def wants_opus(self) -> bool:
-        return True
+        # Use False for PCM - more reliable and less packet loss
+        return False
+    
+    @voice_recv.AudioSink.listener()
+    def on_voice_member_speaking_state(self, member: discord.Member, ssrc: int, state):
+        """Map SSRC to user when they start speaking."""
+        self.ssrc_to_user[ssrc] = member.id
+        self.user_info[member.id] = member.display_name
+        logger.info(f"🔗 Mapped SSRC {ssrc} to {member.display_name} (ID: {member.id})")
     
     def write(self, user, data: voice_recv.VoiceData):
         try:
-            ssrc = getattr(data, 'ssrc', 'unknown')
+            ssrc = getattr(data, 'ssrc', None)
             pcm_data = data.pcm
             
-            if pcm_data and len(pcm_data) > 0:
-                self.audio_data.append(pcm_data)
-                self.total_bytes += len(pcm_data)
+            if not pcm_data or len(pcm_data) == 0:
+                return
+            
+            # Try to identify user
+            user_id = None
+            if user:
+                user_id = user.id
+                if user_id not in self.user_info:
+                    self.user_info[user_id] = user.display_name
+            elif ssrc and ssrc in self.ssrc_to_user:
+                user_id = self.ssrc_to_user[ssrc]
+            
+            # Skip SSRC=0 packets (invalid)
+            if ssrc == 0:
+                return
+            
+            if user_id:
+                self.user_audio[user_id].append(pcm_data)
+                self.total_bytes[user_id] += len(pcm_data)
                 
-                # Debug logging every 100 chunks
-                if len(self.audio_data) % 100 == 0:
-                    user_name = user.display_name if user else f"Unknown(SSRC:{ssrc})"
-                    logger.info(f"🌐 Universal: {len(self.audio_data)} chunks, {self.total_bytes} bytes from {user_name}")
+                # Debug logging every 200 chunks
+                if len(self.user_audio[user_id]) % 200 == 0:
+                    display_name = self.user_info.get(user_id, f"User_{user_id}")
+                    logger.info(
+                        f"🎵 {display_name}: {len(self.user_audio[user_id])} chunks, "
+                        f"{self.total_bytes[user_id]} bytes (SSRC: {ssrc})"
+                    )
             else:
-                logger.debug(f"🌐 Universal: Empty PCM data (SSRC: {ssrc})")
+                logger.debug(f"⚠️ Unknown user for SSRC {ssrc}, skipping packet")
+                
         except Exception as e:
-            logger.error(f"❌ Error in universal sink: {e}")
+            logger.error(f"❌ Error in write(): {e}", exc_info=True)
     
-    async def save_to_file(self) -> Path | None:
-        logger.info(f"💾 Universal save: {len(self.audio_data)} chunks, {self.total_bytes} bytes")
+    async def save_to_files(self) -> list[dict]:
+        """Save all user recordings to separate files."""
+        audio_files = []
         
-        if not self.audio_data:
-            logger.warning(f"⚠️ Universal: No audio data to save")
-            return None
+        for user_id, chunks in self.user_audio.items():
+            if not chunks:
+                continue
+            
+            display_name = self.user_info.get(user_id, f"User_{user_id}")
+            logger.info(f"💾 Saving {display_name}: {len(chunks)} chunks, {self.total_bytes[user_id]} bytes")
+            
+            try:
+                combined_audio = b''.join(chunks)
+                
+                # Check minimum size (1KB)
+                if len(combined_audio) < 1024:
+                    logger.warning(f"⚠️ {display_name}: Audio too short ({len(combined_audio)} bytes)")
+                    continue
+                
+                # Save to file
+                timestamp = int(time.time() * 1000)
+                filename = f"user_{user_id}_{timestamp}.wav"
+                filepath = self.recordings_dir / filename
+                
+                with wave.open(str(filepath), 'wb') as wav_file:
+                    wav_file.setnchannels(2)  # Discord sends stereo PCM
+                    wav_file.setsampwidth(2)  # 16-bit
+                    wav_file.setframerate(48000)  # 48kHz
+                    wav_file.writeframes(combined_audio)
+                
+                file_size = filepath.stat().st_size
+                duration = len(combined_audio) / (48000 * 2 * 2)  # 48kHz, stereo, 16-bit
+                logger.info(f"✅ Saved {display_name}: {file_size} bytes, {duration:.1f}s")
+                
+                audio_files.append({
+                    'filepath': filepath,
+                    'display_name': display_name
+                })
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to save {display_name}: {e}", exc_info=True)
         
-        try:
-            combined_audio = b''.join(self.audio_data)
-            
-            # Check minimum file size
-            if len(combined_audio) < 1024:
-                logger.warning(f"⚠️ Universal: Audio too short ({len(combined_audio)} bytes)")
-                return None
-            
-            with wave.open(str(self.filepath), 'wb') as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(48000)
-                wav_file.writeframes(combined_audio)
-            
-            file_size = self.filepath.stat().st_size
-            duration = len(combined_audio) / (48000 * 2)
-            logger.info(f"✅ Universal saved: {file_size} bytes, {duration:.1f}s duration")
-            return self.filepath
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to save universal audio: {e}")
-            return None
-    
-    def clear_audio_data(self):
-        self.audio_data.clear()
-        self.total_bytes = 0
+        return audio_files
     
     def cleanup(self):
-        """Required abstract method implementation."""
-        self.clear_audio_data()
-
-
-class UserAudioSink(voice_recv.AudioSink):
-    """Audio sink for recording individual users."""
-    
-    def __init__(self, user_id: int, display_name: str, recordings_dir: Path):
-        super().__init__()
-        self.user_id = user_id
-        self.display_name = display_name
-        self.audio_data = []
-        self.total_bytes = 0
-        self.start_time = time.time()
-        
-        timestamp = int(time.time() * 1000)
-        self.filename = f"user_{user_id}_{timestamp}.wav"
-        self.filepath = recordings_dir / self.filename
-        
-        logger.info(f"🎙️ Created sink for {display_name}")
-    
-    def wants_opus(self) -> bool:
-        return True  # Use Opus decoding for better quality
-    
-    def write(self, user, data: voice_recv.VoiceData):
-        try:
-            # Log SSRC for debugging
-            ssrc = getattr(data, 'ssrc', 'unknown')
-            
-            if user and user.id == self.user_id:
-                # Try Opus first, fallback to PCM
-                pcm_data = data.pcm
-                if not pcm_data and hasattr(data, 'opus') and data.opus:
-                    # If no PCM but Opus available, we'll get it from the decoder
-                    logger.debug(f"🎵 {self.display_name}: Using Opus data (SSRC: {ssrc})")
-                    return
-                
-                if pcm_data:
-                    self.audio_data.append(pcm_data)
-                    self.total_bytes += len(pcm_data)
-                    
-                    # Debug logging every 100 chunks
-                    if len(self.audio_data) % 100 == 0:
-                        logger.info(f"🎵 {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes (SSRC: {ssrc})")
-                else:
-                    logger.warning(f"⚠️ {self.display_name}: Empty PCM data received (SSRC: {ssrc})")
-            elif user:
-                logger.debug(f"🔇 Ignoring audio from {user.display_name} (not target user, SSRC: {ssrc})")
-            else:
-                # This is the key issue - user is None but we might still want to process audio
-                logger.warning(f"⚠️ {self.display_name}: Received data with no user (SSRC: {ssrc})")
-                
-                # Try to process audio even without user association
-                # This is a workaround for the SSRC mapping issue
-                pcm_data = data.pcm
-                if pcm_data and len(pcm_data) > 0:
-                    logger.info(f"🎵 {self.display_name}: Processing audio without user association (SSRC: {ssrc})")
-                    self.audio_data.append(pcm_data)
-                    self.total_bytes += len(pcm_data)
-                    
-                    # Debug logging every 100 chunks
-                    if len(self.audio_data) % 100 == 0:
-                        logger.info(f"🎵 {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes (SSRC: {ssrc})")
-        except Exception as e:
-            logger.error(f"❌ Error in write() for {self.display_name}: {e}")
-            # Don't let Opus errors crash the sink
-    
-    def cleanup(self):
-        # Don't clear audio_data here - it gets cleared after save_to_file()
-        pass
-    
-    async def save_to_file(self) -> Path | None:
-        logger.info(f"💾 Starting save for {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes")
-        
-        if not self.audio_data:
-            logger.warning(f"⚠️ {self.display_name}: No audio data to save")
-            return None
-        
-        try:
-            combined_audio = b''.join(self.audio_data)
-            logger.info(f"🔗 {self.display_name}: Combined audio size: {len(combined_audio)} bytes")
-            
-            # Check minimum file size (at least 1KB)
-            if len(combined_audio) < 1024:
-                logger.warning(f"⚠️ {self.display_name}: Audio too short ({len(combined_audio)} bytes)")
-                return None
-            
-            # Filter out silence and improve quality
-            filtered_audio = self._filter_audio(combined_audio)
-            
-            with wave.open(str(self.filepath), 'wb') as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(48000)
-                wav_file.writeframes(filtered_audio)
-            
-            file_size = self.filepath.stat().st_size
-            duration = len(filtered_audio) / (48000 * 2)  # 48kHz, 16-bit
-            logger.info(f"✅ Saved {self.display_name}: {file_size} bytes, {duration:.1f}s duration")
-            return self.filepath
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to save {self.display_name}: {e}")
-            return None
-    
-    def _filter_audio(self, audio_data: bytes) -> bytes:
-        """Filter audio to improve quality and remove silence."""
-        import struct
-        
-        # Convert bytes to 16-bit samples
-        samples = struct.unpack(f'<{len(audio_data)//2}h', audio_data)
-        
-        # Calculate RMS (Root Mean Square) for volume detection
-        rms = (sum(sample * sample for sample in samples) / len(samples)) ** 0.5
-        
-        # If audio is too quiet, return original
-        if rms < 100:  # Threshold for silence
-            logger.warning(f"⚠️ {self.display_name}: Audio too quiet (RMS: {rms:.1f})")
-            return audio_data
-        
-        # Simple noise gate - remove very quiet samples
-        filtered_samples = []
-        silence_threshold = 50  # Adjust based on testing
-        
-        for sample in samples:
-            if abs(sample) > silence_threshold:
-                filtered_samples.append(sample)
-            else:
-                filtered_samples.append(0)  # Silence
-        
-        # Convert back to bytes
-        return struct.pack(f'<{len(filtered_samples)}h', *filtered_samples)
-    
-    def clear_audio_data(self):
-        """Clear audio data after successful save"""
-        self.audio_data.clear()
-        self.total_bytes = 0
+        """Cleanup resources."""
+        self.user_audio.clear()
+        self.total_bytes.clear()
 
 
 class TranscriptionService:
@@ -260,15 +164,19 @@ class TranscriptionService:
             return None
         
         try:
-            with open(audio_file, 'rb') as f:
-                transcript = await self.client.audio.transcriptions.create(
-                    model=self.transcribe_model,
-                    file=f,
-                    language=self.speech_language,
-                    response_format="text"
-                )
+            async with aiofiles.open(audio_file, 'rb') as f:
+                audio_bytes = await f.read()
             
-            text = transcript.text.strip() if hasattr(transcript, 'text') else str(transcript).strip()
+            # Create async context for transcription
+            transcript = await self.client.audio.transcriptions.create(
+                model=self.transcribe_model,
+                file=audio_bytes,
+                language=self.speech_language,
+                response_format="text"
+            )
+            
+            text = transcript if isinstance(transcript, str) else transcript.text
+            text = text.strip()
             
             # Filter fallback responses
             fallbacks = ["субтитры сделал", "субтитры добавил", "transcribed by"]
@@ -325,7 +233,7 @@ class ChannelRecorder:
         self.voice_channel = voice_channel
         self.text_channel = text_channel
         self.voice_client = None
-        self.user_sinks = {}
+        self.sink = None
         
         # Create session directory
         session_id = f"session_{int(time.time())}"
@@ -333,58 +241,20 @@ class ChannelRecorder:
         self.session_dir.mkdir(parents=True, exist_ok=True)
     
     async def start(self):
+        """Start recording the voice channel."""
         self.voice_client = await self.voice_channel.connect(cls=voice_recv.VoiceRecvClient)
-        await self._start_recording_users()
-    
-    async def _start_recording_users(self):
+        
+        # Register members already in channel
         members = [m for m in self.voice_channel.members if not m.bot]
         logger.info(f"🎙️ Recording {len(members)} users in {self.voice_channel.name}")
         
-        for member in members:
-            await self._add_user(member)
-        
-        # Add universal sink as backup
-        await self._add_universal_sink()
-    
-    async def _add_user(self, member: discord.Member):
-        if member.id in self.user_sinks:
-            logger.info(f"ℹ️ User {member.display_name} already has a sink")
-            return
-        
-        sink = UserAudioSink(member.id, member.display_name, self.session_dir)
-        self.user_sinks[member.id] = sink
-        
-        try:
-            self.voice_client.listen(sink)
-            logger.info(f"✅ Recording {member.display_name}")
-        except Exception as e:
-            logger.error(f"❌ Failed to record {member.display_name}: {e}")
-            del self.user_sinks[member.id]
-    
-    async def _add_universal_sink(self):
-        """Add a universal sink to catch all audio regardless of user association."""
-        if not hasattr(self, 'universal_sink'):
-            self.universal_sink = UniversalAudioSink(self.session_dir)
-            try:
-                self.voice_client.listen(self.universal_sink)
-                logger.info("🌐 Added universal audio sink")
-            except Exception as e:
-                logger.error(f"❌ Failed to add universal sink: {e}")
-                self.universal_sink = None
-    
-    async def handle_user_joined(self, member: discord.Member):
-        if not member.bot:
-            logger.info(f"👋 User {member.display_name} joined the channel")
-            await self._add_user(member)
-    
-    async def handle_user_left(self, member: discord.Member):
-        """Handle user leaving the voice channel."""
-        if member.id in self.user_sinks:
-            logger.info(f"👋 User {member.display_name} left the channel")
-            # Don't remove sink immediately - let it finish processing
-            # The sink will be cleaned up after processing
+        # Create and start single unified sink
+        self.sink = MultiUserAudioSink(self.session_dir)
+        self.voice_client.listen(self.sink)
+        logger.info("✅ Started listening to voice channel")
     
     async def stop(self):
+        """Stop recording and process audio."""
         logger.info(f"🛑 Stopping recording for {self.voice_channel.name}")
         
         if self.voice_client:
@@ -393,44 +263,20 @@ class ChannelRecorder:
                     self.voice_client.stop_listening()
                 await self.voice_client.disconnect()
             except Exception as e:
-                logger.error(f"❌ Error during voice disconnect: {e}")
+                logger.error(f"❌ Error during disconnect: {e}")
         
         await self._process_recordings()
     
     async def _process_recordings(self):
-        logger.info(f"📋 Processing recordings: {len(self.user_sinks)} user sinks")
+        """Process and transcribe recordings."""
+        if not self.sink:
+            logger.warning("⚠️ No sink to process")
+            return
         
-        # Save audio files from user sinks
-        audio_files = []
-        for user_id, sink in self.user_sinks.items():
-            logger.info(f"💾 Processing sink for user {user_id}: {len(sink.audio_data)} chunks")
-            
-            filepath = await sink.save_to_file()
-            if filepath:
-                member = self.voice_channel.guild.get_member(user_id)
-                display_name = member.display_name if member else f"User_{user_id}"
-                audio_files.append({
-                    'filepath': filepath,
-                    'display_name': display_name
-                })
-                logger.info(f"✅ Added {display_name} to processing queue")
-                # Clear audio data only after successful save
-                sink.clear_audio_data()
-            else:
-                logger.warning(f"❌ Failed to save audio for user {user_id}")
-                # Don't clear audio data if save failed - keep for debugging
+        logger.info("📋 Processing recordings...")
         
-        # If no user recordings, try universal sink
-        if not audio_files and hasattr(self, 'universal_sink') and self.universal_sink:
-            logger.info("🔄 No user recordings found, trying universal sink...")
-            filepath = await self.universal_sink.save_to_file()
-            if filepath:
-                audio_files.append({
-                    'filepath': filepath,
-                    'display_name': 'Universal Recording'
-                })
-                logger.info("✅ Added universal recording to processing queue")
-                self.universal_sink.clear_audio_data()
+        # Save all audio files
+        audio_files = await self.sink.save_to_files()
         
         logger.info(f"📁 Total valid audio files: {len(audio_files)}")
         
@@ -442,6 +288,7 @@ class ChannelRecorder:
         await self._transcribe_and_summarize(audio_files)
     
     async def _transcribe_and_summarize(self, audio_files: list[dict]):
+        """Transcribe audio files and generate summary."""
         service = TranscriptionService()
         transcriptions = []
         
@@ -479,6 +326,7 @@ class ChannelRecorder:
         await self._send_transcript(transcript)
     
     async def _send_message(self, content: str):
+        """Send message to text channel."""
         try:
             webhook = await self.text_channel.create_webhook(
                 name="Scribe AI",
@@ -494,6 +342,7 @@ class ChannelRecorder:
                 pass
     
     async def _send_transcript(self, transcript: str):
+        """Send transcript file to text channel."""
         try:
             transcript_file = self.session_dir / "transcript.md"
             async with aiofiles.open(transcript_file, 'w', encoding='utf-8') as f:
@@ -504,8 +353,9 @@ class ChannelRecorder:
                 reason="Transcript file"
             )
             
-            with open(transcript_file, 'rb') as f:
-                file = discord.File(f, filename="transcript.md")
+            async with aiofiles.open(transcript_file, 'rb') as f:
+                file_data = await f.read()
+                file = discord.File(fp=file_data, filename="transcript.md")
                 await webhook.send(file=file)
             
             await webhook.delete()
@@ -532,6 +382,7 @@ class ScribeBot(commands.Bot):
         self.recordings = {}
     
     async def setup_hook(self):
+        """Setup bot commands."""
         logger.info("🤖 Setting up bot...")
         
         @self.tree.command(name="start", description="Start recording voice channel")
@@ -567,7 +418,7 @@ class ScribeBot(commands.Bot):
                     ephemeral=True
                 )
             except Exception as e:
-                logger.error(f"❌ Start failed: {e}")
+                logger.error(f"❌ Start failed: {e}", exc_info=True)
                 await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
         
         @self.tree.command(name="stop", description="Stop recording and generate transcript")
@@ -603,7 +454,7 @@ class ScribeBot(commands.Bot):
                 await recorder.stop()
                 del self.recordings[target_channel.id]
             except Exception as e:
-                logger.error(f"❌ Stop failed: {e}")
+                logger.error(f"❌ Stop failed: {e}", exc_info=True)
                 await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
         
         try:
@@ -613,30 +464,13 @@ class ScribeBot(commands.Bot):
             logger.error(f"❌ Sync failed: {e}")
     
     async def on_ready(self):
+        """Called when bot is ready."""
         logger.info(f"🤖 Ready as {self.user} (ID: {self.user.id})")
         logger.info(f"📡 Connected to {len(self.guilds)} guilds")
-    
-    async def on_voice_state_update(
-        self, 
-        member: discord.Member, 
-        before: discord.VoiceState, 
-        after: discord.VoiceState
-    ):
-        if member.bot:
-            return
-        
-        # User joined a recording channel
-        if after.channel and after.channel.id in self.recordings:
-            recorder = self.recordings[after.channel.id]
-            await recorder.handle_user_joined(member)
-        
-        # User left a recording channel
-        if before.channel and before.channel.id in self.recordings:
-            recorder = self.recordings[before.channel.id]
-            await recorder.handle_user_left(member)
 
 
 async def main():
+    """Main entry point."""
     logger.info("🚀 Starting Discord Scribe Bot...")
     
     # Validate environment
@@ -659,7 +493,7 @@ async def main():
     except KeyboardInterrupt:
         logger.info("🛑 Shutting down...")
     except Exception as e:
-        logger.error(f"💥 Fatal error: {e}")
+        logger.error(f"💥 Fatal error: {e}", exc_info=True)
         sys.exit(1)
     finally:
         # Cleanup recordings

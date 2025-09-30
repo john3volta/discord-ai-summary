@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip wheel && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
 
 # Copy application code
 COPY main.py .

@@ -30,17 +30,13 @@ Discord voice transcription bot with AI summarization. **Python implementation**
 
 ## Docker Deployment
 
-1) Create `.env` next to `docker-compose.yml`:
 ```bash
-DISCORD_TOKEN=MToyMDQwZGc2Mjk3...
-OPENAI_API_KEY=sk-1VqGtnG0DnTmXt...
-OPENAI_MODEL=gpt-4o-mini
-OPENAI_TRANSCRIBE_MODEL=whisper-1
-SPEECH_LANG=ru
-SUMMARY_PROMPT=prompt.md
-# Set to keep WAV files after processing
-# KEEP_RECORDINGS=true
+# On your server
+git clone https://github.com/john3volta/discord-ai-summary.git
+cd discord-ai-summary
 ```
+
+1) Create `.env` next to `docker-compose.yml`:
 
 2) Deploy:
 ```bash
@@ -53,72 +49,6 @@ docker compose logs -f scribe
 ```
 
 3) Bot permissions: **View Channel, Connect, Send Messages, Attach Files, Manage Webhooks**
-
-## Local Development
-
-### Requirements
-- Python 3.11+
-- FFmpeg
-
-### Setup
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Create .env file with your tokens
-cp .env.example .env
-
-# Run locally
-python main.py
-```
-
-## Server Deployment Options
-
-### Option 1: Docker (Recommended)
-```bash
-# On your server
-git clone https://github.com/john3volta/discord-ai-summary.git
-cd discord-ai-summary
-docker compose up -d
-```
-
-### Option 2: Direct Python
-```bash
-# Install Python 3.11+ and FFmpeg
-apt update && apt install -y python3.11 python3-pip ffmpeg libopus0
-
-# Clone and run
-git clone https://github.com/john3volta/discord-ai-summary.git
-cd discord-ai-summary
-pip install -r requirements.txt
-python main.py
-```
-
-### Option 3: Systemd Service
-```bash
-# Create service file
-sudo tee /etc/systemd/system/discord-ai-summary.service << EOF
-[Unit]
-Description=Discord AI Summary Bot
-After=network.target
-
-[Service]
-Type=simple
-User=discord
-WorkingDirectory=/opt/discord-ai-summary
-Environment=PYTHONPATH=/opt/discord-ai-summary
-ExecStart=/usr/bin/python3 main.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Enable and start
-sudo systemctl enable discord-ai-summary
-sudo systemctl start discord-ai-summary
-```
 
 ## Pricing
 
