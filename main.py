@@ -100,6 +100,10 @@ class UniversalAudioSink(voice_recv.AudioSink):
     def clear_audio_data(self):
         self.audio_data.clear()
         self.total_bytes = 0
+    
+    def cleanup(self):
+        """Required abstract method implementation."""
+        self.clear_audio_data()
 
 
 class UserAudioSink(voice_recv.AudioSink):
