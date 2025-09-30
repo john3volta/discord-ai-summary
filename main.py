@@ -58,9 +58,26 @@ async def record(ctx):
         return
     
     try:
-        # Подключение к голосовому каналу
-        vc = await voice.channel.connect()
-        connections[ctx.guild.id] = vc
+        # Подключение к голосовому каналу с retry
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                vc = await voice.channel.connect()
+                connections[ctx.guild.id] = vc
+                logger.info(f"✅ Connected to voice channel on attempt {attempt + 1}")
+                break
+            except Exception as connect_error:
+                logger.warning(f"⚠️ Connection attempt {attempt + 1} failed: {connect_error}")
+                if attempt == max_retries - 1:
+                    raise connect_error
+                await asyncio.sleep(2)  # Wait 2 seconds before retry
+        
+        # Ждем стабилизации соединения
+        await asyncio.sleep(1)
+        
+        # Проверяем, что соединение активно
+        if not vc.is_connected():
+            raise Exception("Voice connection not established")
         
         # Начало записи с WaveSink
         vc.start_recording(
@@ -75,6 +92,9 @@ async def record(ctx):
     except Exception as e:
         logger.error(f"❌ Error starting recording: {e}")
         await ctx.respond(f"❌ Ошибка при запуске записи: {e}")
+        # Очищаем соединение при ошибке
+        if ctx.guild.id in connections:
+            del connections[ctx.guild.id]
 
 async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
     """Обработка завершенной записи."""
