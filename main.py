@@ -27,10 +27,16 @@ openai_client = openai.OpenAI(api_key=env.get("OPENAI_API_KEY"))
 
 # Загрузка Opus (для Linux)
 try:
-    discord.opus.load_opus()
+    discord.opus.load_opus("/usr/lib/x86_64-linux-gnu/libopus.so.0")
     logger.info("✅ Opus loaded successfully")
-except Exception as e:
+        except Exception as e:
     logger.warning(f"⚠️ Could not load Opus: {e}")
+    # Попробуем альтернативные пути
+    try:
+        discord.opus.load_opus("/usr/lib/libopus.so.0")
+        logger.info("✅ Opus loaded from alternative path")
+    except Exception as e2:
+        logger.warning(f"⚠️ Could not load Opus from alternative path: {e2}")
 
 @bot.event
 async def on_ready():
@@ -49,7 +55,7 @@ async def record(ctx):
     
     if ctx.guild.id in connections:
         await ctx.respond("⚠️ Запись уже идет в этом сервере!")
-        return
+                    return
     
     try:
         # Подключение к голосовому каналу
@@ -240,10 +246,10 @@ async def status(ctx):
 
 # Запуск бота
 if __name__ == "__main__":
-    token = env.get("DISCORD_BOT_TOKEN")
+    token = env.get("DISCORD_TOKEN")
     if not token:
-        logger.error("❌ DISCORD_BOT_TOKEN not found in environment variables")
+        logger.error("❌ DISCORD_TOKEN not found in environment variables")
         exit(1)
-    
+
     logger.info("🚀 Starting Discord bot...")
     bot.run(token)
