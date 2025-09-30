@@ -59,11 +59,11 @@ class MultiUserAudioSink(voice_recv.AudioSink):
     def write(self, user, data: voice_recv.VoiceData):
         try:
             ssrc = getattr(data, 'ssrc', None)
-            logger.debug(f"📥 write() called: user={user}, ssrc={ssrc}")
+            logger.info(f"📥 write() called: user={user}, ssrc={ssrc}")  # INFO level для тестирования
             
             # Skip invalid SSRC
             if not ssrc or ssrc == 0:
-                logger.debug(f"⚠️ Skipping invalid SSRC: {ssrc}")
+                logger.info(f"⚠️ Skipping invalid SSRC: {ssrc}")
                 return
             
             # Get PCM data
@@ -259,12 +259,6 @@ class ChannelRecorder:
         # Create and start single unified sink
         self.sink = MultiUserAudioSink(self.session_dir)
         self.voice_client.listen(self.sink)
-        
-        # Register voice events
-        @self.bot.event
-        async def on_voice_member_speaking_state(member: discord.Member, ssrc: int, state):
-            if hasattr(self, 'sink'):
-                self.sink.on_voice_member_speaking_state(member, ssrc, state)
         
         logger.info("✅ Started listening to voice channel")
     
@@ -482,6 +476,13 @@ class ScribeBot(commands.Bot):
         """Called when bot is ready."""
         logger.info(f"🤖 Ready as {self.user} (ID: {self.user.id})")
         logger.info(f"📡 Connected to {len(self.guilds)} guilds")
+    
+    async def on_voice_member_speaking_state(self, member: discord.Member, ssrc: int, state):
+        """Handle voice member speaking state changes."""
+        # Forward to active recorders
+        for recorder in self.recordings.values():
+            if hasattr(recorder, 'sink'):
+                recorder.sink.on_voice_member_speaking_state(member, ssrc, state)
 
 
 async def main():
