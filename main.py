@@ -31,6 +31,77 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class UniversalAudioSink(voice_recv.AudioSink):
+    """Universal audio sink that captures all audio regardless of user association."""
+    
+    def __init__(self, recordings_dir: Path):
+        super().__init__()
+        self.audio_data = []
+        self.total_bytes = 0
+        self.start_time = time.time()
+        
+        timestamp = int(time.time() * 1000)
+        self.filename = f"universal_{timestamp}.wav"
+        self.filepath = recordings_dir / self.filename
+        
+        logger.info(f"🌐 Created universal audio sink")
+    
+    def wants_opus(self) -> bool:
+        return True
+    
+    def write(self, user, data: voice_recv.VoiceData):
+        try:
+            ssrc = getattr(data, 'ssrc', 'unknown')
+            pcm_data = data.pcm
+            
+            if pcm_data and len(pcm_data) > 0:
+                self.audio_data.append(pcm_data)
+                self.total_bytes += len(pcm_data)
+                
+                # Debug logging every 100 chunks
+                if len(self.audio_data) % 100 == 0:
+                    user_name = user.display_name if user else f"Unknown(SSRC:{ssrc})"
+                    logger.info(f"🌐 Universal: {len(self.audio_data)} chunks, {self.total_bytes} bytes from {user_name}")
+            else:
+                logger.debug(f"🌐 Universal: Empty PCM data (SSRC: {ssrc})")
+        except Exception as e:
+            logger.error(f"❌ Error in universal sink: {e}")
+    
+    async def save_to_file(self) -> Path | None:
+        logger.info(f"💾 Universal save: {len(self.audio_data)} chunks, {self.total_bytes} bytes")
+        
+        if not self.audio_data:
+            logger.warning(f"⚠️ Universal: No audio data to save")
+            return None
+        
+        try:
+            combined_audio = b''.join(self.audio_data)
+            
+            # Check minimum file size
+            if len(combined_audio) < 1024:
+                logger.warning(f"⚠️ Universal: Audio too short ({len(combined_audio)} bytes)")
+                return None
+            
+            with wave.open(str(self.filepath), 'wb') as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(48000)
+                wav_file.writeframes(combined_audio)
+            
+            file_size = self.filepath.stat().st_size
+            duration = len(combined_audio) / (48000 * 2)
+            logger.info(f"✅ Universal saved: {file_size} bytes, {duration:.1f}s duration")
+            return self.filepath
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to save universal audio: {e}")
+            return None
+    
+    def clear_audio_data(self):
+        self.audio_data.clear()
+        self.total_bytes = 0
+
+
 class UserAudioSink(voice_recv.AudioSink):
     """Audio sink for recording individual users."""
     
@@ -53,12 +124,15 @@ class UserAudioSink(voice_recv.AudioSink):
     
     def write(self, user, data: voice_recv.VoiceData):
         try:
+            # Log SSRC for debugging
+            ssrc = getattr(data, 'ssrc', 'unknown')
+            
             if user and user.id == self.user_id:
                 # Try Opus first, fallback to PCM
                 pcm_data = data.pcm
                 if not pcm_data and hasattr(data, 'opus') and data.opus:
                     # If no PCM but Opus available, we'll get it from the decoder
-                    logger.debug(f"🎵 {self.display_name}: Using Opus data")
+                    logger.debug(f"🎵 {self.display_name}: Using Opus data (SSRC: {ssrc})")
                     return
                 
                 if pcm_data:
@@ -67,13 +141,26 @@ class UserAudioSink(voice_recv.AudioSink):
                     
                     # Debug logging every 100 chunks
                     if len(self.audio_data) % 100 == 0:
-                        logger.info(f"🎵 {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes")
+                        logger.info(f"🎵 {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes (SSRC: {ssrc})")
                 else:
-                    logger.warning(f"⚠️ {self.display_name}: Empty PCM data received")
+                    logger.warning(f"⚠️ {self.display_name}: Empty PCM data received (SSRC: {ssrc})")
             elif user:
-                logger.debug(f"🔇 Ignoring audio from {user.display_name} (not target user)")
+                logger.debug(f"🔇 Ignoring audio from {user.display_name} (not target user, SSRC: {ssrc})")
             else:
-                logger.warning(f"⚠️ {self.display_name}: Received data with no user")
+                # This is the key issue - user is None but we might still want to process audio
+                logger.warning(f"⚠️ {self.display_name}: Received data with no user (SSRC: {ssrc})")
+                
+                # Try to process audio even without user association
+                # This is a workaround for the SSRC mapping issue
+                pcm_data = data.pcm
+                if pcm_data and len(pcm_data) > 0:
+                    logger.info(f"🎵 {self.display_name}: Processing audio without user association (SSRC: {ssrc})")
+                    self.audio_data.append(pcm_data)
+                    self.total_bytes += len(pcm_data)
+                    
+                    # Debug logging every 100 chunks
+                    if len(self.audio_data) % 100 == 0:
+                        logger.info(f"🎵 {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes (SSRC: {ssrc})")
         except Exception as e:
             logger.error(f"❌ Error in write() for {self.display_name}: {e}")
             # Don't let Opus errors crash the sink
@@ -251,9 +338,13 @@ class ChannelRecorder:
         
         for member in members:
             await self._add_user(member)
+        
+        # Add universal sink as backup
+        await self._add_universal_sink()
     
     async def _add_user(self, member: discord.Member):
         if member.id in self.user_sinks:
+            logger.info(f"ℹ️ User {member.display_name} already has a sink")
             return
         
         sink = UserAudioSink(member.id, member.display_name, self.session_dir)
@@ -266,8 +357,20 @@ class ChannelRecorder:
             logger.error(f"❌ Failed to record {member.display_name}: {e}")
             del self.user_sinks[member.id]
     
+    async def _add_universal_sink(self):
+        """Add a universal sink to catch all audio regardless of user association."""
+        if not hasattr(self, 'universal_sink'):
+            self.universal_sink = UniversalAudioSink(self.session_dir)
+            try:
+                self.voice_client.listen(self.universal_sink)
+                logger.info("🌐 Added universal audio sink")
+            except Exception as e:
+                logger.error(f"❌ Failed to add universal sink: {e}")
+                self.universal_sink = None
+    
     async def handle_user_joined(self, member: discord.Member):
         if not member.bot:
+            logger.info(f"👋 User {member.display_name} joined the channel")
             await self._add_user(member)
     
     async def handle_user_left(self, member: discord.Member):
@@ -293,11 +396,7 @@ class ChannelRecorder:
     async def _process_recordings(self):
         logger.info(f"📋 Processing recordings: {len(self.user_sinks)} user sinks")
         
-        if not self.user_sinks:
-            await self._send_message("⚠️ No recordings found")
-            return
-        
-        # Save audio files
+        # Save audio files from user sinks
         audio_files = []
         for user_id, sink in self.user_sinks.items():
             logger.info(f"💾 Processing sink for user {user_id}: {len(sink.audio_data)} chunks")
@@ -316,6 +415,18 @@ class ChannelRecorder:
             else:
                 logger.warning(f"❌ Failed to save audio for user {user_id}")
                 # Don't clear audio data if save failed - keep for debugging
+        
+        # If no user recordings, try universal sink
+        if not audio_files and hasattr(self, 'universal_sink') and self.universal_sink:
+            logger.info("🔄 No user recordings found, trying universal sink...")
+            filepath = await self.universal_sink.save_to_file()
+            if filepath:
+                audio_files.append({
+                    'filepath': filepath,
+                    'display_name': 'Universal Recording'
+                })
+                logger.info("✅ Added universal recording to processing queue")
+                self.universal_sink.clear_audio_data()
         
         logger.info(f"📁 Total valid audio files: {len(audio_files)}")
         
