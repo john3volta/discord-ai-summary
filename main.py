@@ -52,21 +52,29 @@ class UserAudioSink(voice_recv.AudioSink):
         return False
     
     def write(self, user, data: voice_recv.VoiceData):
-        if user and user.id == self.user_id:
-            pcm_data = data.pcm
-            if pcm_data:
-                self.audio_data.append(pcm_data)
-                self.total_bytes += len(pcm_data)
-                
-                # Debug logging every 100 chunks
-                if len(self.audio_data) % 100 == 0:
-                    logger.info(f"🎵 {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes")
+        try:
+            if user and user.id == self.user_id:
+                pcm_data = data.pcm
+                if pcm_data:
+                    self.audio_data.append(pcm_data)
+                    self.total_bytes += len(pcm_data)
+                    
+                    # Debug logging every 100 chunks
+                    if len(self.audio_data) % 100 == 0:
+                        logger.info(f"🎵 {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes")
+                else:
+                    logger.warning(f"⚠️ {self.display_name}: Empty PCM data received")
+            elif user:
+                logger.debug(f"🔇 Ignoring audio from {user.display_name} (not target user)")
             else:
-                logger.warning(f"⚠️ {self.display_name}: Empty PCM data received")
-        elif user:
-            logger.debug(f"🔇 Ignoring audio from {user.display_name} (not target user)")
-        else:
-            logger.warning(f"⚠️ {self.display_name}: Received data with no user")
+                logger.warning(f"⚠️ {self.display_name}: Received data with no user")
+        except Exception as e:
+            logger.error(f"❌ Error in write() for {self.display_name}: {e}")
+            # Don't let Opus errors crash the sink
+    
+    def cleanup(self):
+        # Don't clear audio_data here - it gets cleared after save_to_file()
+        pass
     
     async def save_to_file(self) -> Path | None:
         logger.info(f"💾 Starting save for {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes")
@@ -99,8 +107,10 @@ class UserAudioSink(voice_recv.AudioSink):
             logger.error(f"❌ Failed to save {self.display_name}: {e}")
             return None
     
-    def cleanup(self):
+    def clear_audio_data(self):
+        """Clear audio data after successful save"""
         self.audio_data.clear()
+        self.total_bytes = 0
 
 
 class TranscriptionService:
@@ -254,10 +264,11 @@ class ChannelRecorder:
                     'display_name': display_name
                 })
                 logger.info(f"✅ Added {display_name} to processing queue")
+                # Clear audio data only after successful save
+                sink.clear_audio_data()
             else:
                 logger.warning(f"❌ Failed to save audio for user {user_id}")
-            
-            sink.cleanup()
+                # Don't clear audio data if save failed - keep for debugging
         
         logger.info(f"📁 Total valid audio files: {len(audio_files)}")
         
