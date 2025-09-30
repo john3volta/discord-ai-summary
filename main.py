@@ -11,49 +11,23 @@ import os
 import io
 import wave
 
-# Кастомный SafeWaveSink с обработкой ошибок
-class SafeWaveSink(discord.sinks.Sink):
-    def __init__(self, *, filters=None):
-        super().__init__(filters=filters)
-        self.encoding = "wav"
-        self.vc = None
-        self.audio_data = {}
-        self.error_count = 0
-        self.max_errors = 100  # Увеличиваем лимит ошибок
-    
-    def write(self, data, user):
-        try:
-            if user not in self.audio_data:
-                file = io.BytesIO()
-                self.audio_data.update({user: discord.sinks.AudioData(file)})
-            
-            file = self.audio_data[user]
-            file.write(data)
-        except (IndexError, ValueError, AttributeError, Exception) as e:
-            self.error_count += 1
-            if self.error_count <= 5:  # Логируем только первые 5 ошибок
-                logger.warning(f"⚠️ Audio processing error #{self.error_count}: {e}")
-            # Не останавливаем запись при ошибках - просто пропускаем плохие пакеты
-    
-    def format_audio(self, audio):
-        """Formats the recorded audio into WAV format."""
-        if self.vc.recording:
-            raise discord.sinks.WaveSinkError(
-                "Audio may only be formatted after recording is finished."
-            )
-        
-        try:
-            data = audio.file
-            with wave.open(data, "wb") as f:
-                f.setnchannels(self.vc.decoder.CHANNELS)
-                f.setsampwidth(self.vc.decoder.SAMPLE_SIZE // self.vc.decoder.CHANNELS)
-                f.setframerate(self.vc.decoder.SAMPLING_RATE)
-            
-            data.seek(0)
-            audio.on_format(self.encoding)
-        except Exception as e:
-            logger.error(f"❌ Error formatting audio: {e}")
-            raise discord.sinks.WaveSinkError(f"Formatting the audio failed: {e}")
+# Исследуем проблему - логируем данные перед ошибкой
+import discord.sinks.core as sinks_core
+
+original_rawdata_init = sinks_core.RawData.__init__
+
+def debug_rawdata_init(self, data, client):
+    logger.info(f"🔍 RawData input: len={len(data)}, type={type(data)}")
+    if len(data) < 2:
+        logger.warning(f"⚠️ Data too short: {data}")
+    try:
+        return original_rawdata_init(self, data, client)
+    except (IndexError, ValueError, AttributeError) as e:
+        logger.error(f"❌ RawData error: {e}, data_len={len(data)}, data={data[:10] if len(data) > 0 else 'EMPTY'}")
+        raise  # Пробрасываем ошибку чтобы понять где она происходит
+
+sinks_core.RawData.__init__ = debug_rawdata_init
+
 
 
 # Настройка логирования
@@ -110,9 +84,9 @@ async def record(ctx):
         connections[ctx.guild.id] = vc
         logger.info("✅ Connected to voice channel")
         
-        # Начало записи с SafeWaveSink
+        # Начало записи с WaveSink
         vc.start_recording(
-            SafeWaveSink(),
+            discord.sinks.WaveSink(),
             once_done,
             ctx.channel,
         )
