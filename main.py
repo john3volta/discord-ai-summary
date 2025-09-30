@@ -1,603 +1,249 @@
-#!/usr/bin/env python3
-"""
-Discord AI Summary Bot
-Author: john3volta
-License: MIT
-"""
-
+import discord
+import openai
 import asyncio
 import logging
-import os
-import sys
-import time
-import wave
-from pathlib import Path
-from collections import defaultdict
-
-import discord
-from discord.ext import commands, voice_recv
 from dotenv import load_dotenv
-import openai
-import aiofiles
+from os import environ as env
+from const import conversationSummarySchema
+from pathlib import Path
+import tempfile
+import os
 
-# Load environment variables
-load_dotenv()
-
-# Configure logging
+# Настройка логирования
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
+# Инициализация бота
+bot = discord.Bot()
+connections = {}
+load_dotenv()
 
-class MultiUserAudioSink(voice_recv.AudioSink):
-    """Unified audio sink that captures all users in one sink."""
-    
-    def __init__(self, recordings_dir: Path):
-        super().__init__()
-        self.recordings_dir = recordings_dir
-        self.user_audio = defaultdict(list)  # user_id -> [audio_chunks]
-        self.user_info = {}  # user_id -> display_name
-        self.ssrc_to_user = {}  # ssrc -> user_id
-        self.total_bytes = defaultdict(int)
-        self.start_time = time.time()
-        self.write_calls = 0  # Counter for write() calls
-        
-        logger.info("🎙️ Created multi-user audio sink")
-    
-    def wants_opus(self) -> bool:
-        # Use True - Opus is more reliable in discord-ext-voice-recv
-        return True
-    
-    def on_voice_member_speaking_state(self, member: discord.Member, ssrc: int, state):
-        """Map SSRC to user when they start speaking."""
-        self.ssrc_to_user[ssrc] = member.id
-        self.user_info[member.id] = member.display_name
-        logger.info(f"🔗 Mapped SSRC {ssrc} to {member.display_name} (ID: {member.id})")
-    
-    def on_voice_member_speaking_start(self, member: discord.Member):
-        """Handle when member starts speaking."""
-        logger.info(f"🎤 {member.display_name} started speaking")
-    
-    def on_voice_member_speaking_stop(self, member: discord.Member):
-        """Handle when member stops speaking."""
-        logger.info(f"🔇 {member.display_name} stopped speaking")
-    
-    def on_voice_member_disconnect(self, member: discord.Member, ssrc: int | None):
-        """Handle when member disconnects."""
-        if ssrc and ssrc in self.ssrc_to_user:
-            del self.ssrc_to_user[ssrc]
-        logger.info(f"👋 {member.display_name} disconnected (SSRC: {ssrc})")
-    
-    def write(self, user, data: voice_recv.VoiceData):
-        try:
-            self.write_calls += 1
-            ssrc = getattr(data, 'ssrc', None)
-            
-            # Try to get SSRC from user if data.ssrc is None
-            if not ssrc or ssrc == 0:
-                # Try to find SSRC from user mapping
-                if user and user.id in self.user_info:
-                    # Find SSRC for this user
-                    for mapped_ssrc, mapped_user_id in self.ssrc_to_user.items():
-                        if mapped_user_id == user.id:
-                            ssrc = mapped_ssrc
-                            break
-                
-                if not ssrc or ssrc == 0:
-                    return  # Skip invalid SSRC silently
-            
-            # Get Opus data
-            opus_data = data.opus
-            if not opus_data or len(opus_data) == 0:
-                return  # Skip empty data silently
-            
-            # Try to identify user
-            user_id = None
-            if user:
-                user_id = user.id
-                if user_id not in self.user_info:
-                    self.user_info[user_id] = user.display_name
-            elif ssrc in self.ssrc_to_user:
-                user_id = self.ssrc_to_user[ssrc]
-            else:
-                return  # Skip unknown user silently
-            
-            if user_id:
-                self.user_audio[user_id].append(opus_data)
-                self.total_bytes[user_id] += len(opus_data)
-                
-                # Log only every 50 chunks to reduce spam
-                if len(self.user_audio[user_id]) % 50 == 0:
-                    display_name = self.user_info.get(user_id, f"User_{user_id}")
-                    logger.info(
-                        f"🎵 {display_name}: {len(self.user_audio[user_id])} chunks, "
-                        f"{self.total_bytes[user_id]} bytes"
-                    )
-                
-        except Exception as e:
-            logger.error(f"❌ Error in write() #{self.write_calls}: {e}", exc_info=True)
-    
-    async def save_to_files(self) -> list[dict]:
-        """Save all user recordings to separate files."""
-        audio_files = []
-        
-        logger.info(f"💾 Saving recordings for {len(self.user_audio)} users")
-        
-        for user_id, chunks in self.user_audio.items():
-            if not chunks:
-                continue
-            
-            display_name = self.user_info.get(user_id, f"User_{user_id}")
-            logger.info(f"💾 Saving {display_name}: {len(chunks)} chunks, {self.total_bytes[user_id]} bytes")
-            
-            try:
-                combined_audio = b''.join(chunks)
-                
-                # Check minimum size (1KB)
-                if len(combined_audio) < 1024:
-                    logger.warning(f"⚠️ {display_name}: Audio too short ({len(combined_audio)} bytes)")
-                    continue
-                
-                # Save Opus data directly (not WAV)
-                timestamp = int(time.time() * 1000)
-                filename = f"user_{user_id}_{timestamp}.opus"
-                filepath = self.recordings_dir / filename
-                
-                # Write raw Opus data
-                with open(filepath, 'wb') as opus_file:
-                    opus_file.write(combined_audio)
-                
-                file_size = filepath.stat().st_size
-                duration = len(combined_audio) / (48000 * 2 * 2)  # 48kHz, stereo, 16-bit
-                logger.info(f"✅ Saved {display_name}: {file_size} bytes, {duration:.1f}s")
-                
-                audio_files.append({
-                    'filepath': filepath,
-                    'display_name': display_name
-                })
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to save {display_name}: {e}", exc_info=True)
-        
-        return audio_files
-    
-    def cleanup(self):
-        """Cleanup resources."""
-        self.user_audio.clear()
-        self.total_bytes.clear()
+# Инициализация OpenAI
+openai_client = openai.OpenAI(api_key=env.get("OPENAI_API_KEY"))
 
+# Загрузка Opus (для Linux)
+try:
+    discord.opus.load_opus()
+    logger.info("✅ Opus loaded successfully")
+except Exception as e:
+    logger.warning(f"⚠️ Could not load Opus: {e}")
 
-class TranscriptionService:
-    """OpenAI Whisper transcription and GPT summarization."""
-    
-    def __init__(self):
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY required")
-        
-        self.client = openai.AsyncOpenAI(api_key=api_key)
-        self.transcribe_model = os.getenv('OPENAI_TRANSCRIBE_MODEL', 'whisper-1')
-        self.summary_model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
-        self.speech_language = os.getenv('SPEECH_LANG', 'ru')
-        self.prompt_file = os.getenv('SUMMARY_PROMPT', 'prompt.md')
-    
-    async def transcribe_file(self, audio_file: Path) -> str | None:
-        if not audio_file.exists() or audio_file.stat().st_size < 1024:
-            return None
-        
-        try:
-            # Convert Opus to WAV for Whisper
-            if audio_file.suffix == '.opus':
-                wav_file = audio_file.with_suffix('.wav')
-                await self._convert_opus_to_wav(audio_file, wav_file)
-                audio_file = wav_file
-            
-            async with aiofiles.open(audio_file, 'rb') as f:
-                audio_bytes = await f.read()
-            
-            # Create async context for transcription
-                transcript = await self.client.audio.transcriptions.create(
-                    model=self.transcribe_model,
-                file=audio_bytes,
-                    language=self.speech_language,
-                    response_format="text"
-                )
-            
-            text = transcript if isinstance(transcript, str) else transcript.text
-            text = text.strip()
-            
-            # Filter fallback responses
-            fallbacks = ["субтитры сделал", "субтитры добавил", "transcribed by"]
-            if any(fb in text.lower() for fb in fallbacks):
-                return None
-            
-            return text if text else None
-            
-        except Exception as e:
-            logger.error(f"❌ Transcription failed: {e}")
-            return None
-    
-    async def _convert_opus_to_wav(self, opus_file: Path, wav_file: Path) -> None:
-        """Convert Opus file to WAV using ffmpeg."""
-        try:
-            import subprocess
-            import asyncio
-            
-            # Use ffmpeg to convert Opus to WAV
-            cmd = [
-                'ffmpeg', '-i', str(opus_file),
-                '-acodec', 'pcm_s16le',
-                '-ar', '48000',
-                '-ac', '2',
-                '-y',  # Overwrite output file
-                str(wav_file)
-            ]
-            
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode != 0:
-                logger.error(f"❌ FFmpeg conversion failed: {stderr.decode()}")
-                raise Exception(f"FFmpeg conversion failed: {stderr.decode()}")
-            
-            logger.info(f"✅ Converted {opus_file.name} to {wav_file.name}")
-            
-        except Exception as e:
-            logger.error(f"❌ Opus to WAV conversion failed: {e}")
-            raise
-    
-    async def generate_summary(self, transcript: str) -> str:
-        try:
-            prompt = await self._load_prompt()
-            full_prompt = f"{prompt}\n\nTranscript:\n{transcript[:120000]}"
-            
-            response = await self.client.chat.completions.create(
-                model=self.summary_model,
-                messages=[{"role": "user", "content": full_prompt}],
-                temperature=0.2,
-                max_tokens=4000
-            )
-            
-            if response.choices and response.choices[0].message:
-                return response.choices[0].message.content.strip()
-            
-            return "⚠️ Summary generation failed"
-            
-        except Exception as e:
-            logger.error(f"❌ Summary failed: {e}")
-            return f"❌ Summary error: {e}"
-    
-    async def _load_prompt(self) -> str:
-        try:
-            async with aiofiles.open(self.prompt_file, 'r', encoding='utf-8') as f:
-                return await f.read()
-        except:
-            return """Создай краткое резюме разговора на русском языке.
+@bot.event
+async def on_ready():
+    """Бот готов к работе."""
+    logger.info(f"🤖 {bot.user} is ready!")
+    logger.info(f"🔗 Connected to {len(bot.guilds)} guilds")
 
-Формат:
-📝 **Краткое резюме**
-🗣️ **Участники**
-📋 **Основные темы**
-✅ **Решения**
-❓ **Вопросы**"""
-
-
-class ChannelRecorder:
-    """Records voice channel conversations."""
+@bot.slash_command(name="record", description="Начать запись голосового канала")
+async def record(ctx):
+    """Начать запись голосового канала."""
+    voice = ctx.author.voice
     
-    def __init__(self, bot, voice_channel: discord.VoiceChannel, text_channel):
-        self.bot = bot
-        self.voice_channel = voice_channel
-        self.text_channel = text_channel
-        self.voice_client = None
-        self.sink = None
-        
-        # Create session directory
-        session_id = f"session_{int(time.time())}"
-        self.session_dir = Path("recordings") / session_id
-        self.session_dir.mkdir(parents=True, exist_ok=True)
+    if not voice:
+        await ctx.respond("⚠️ Вы не находитесь в голосовом канале!")
+        return
     
-    async def start(self):
-        """Start recording the voice channel."""
-        self.voice_client = await self.voice_channel.connect(cls=voice_recv.VoiceRecvClient)
-    
-        # Register members already in channel
-        members = [m for m in self.voice_channel.members if not m.bot]
-        logger.info(f"🎙️ Recording {len(members)} users in {self.voice_channel.name}")
-        
-        # Create and start single unified sink
-        self.sink = MultiUserAudioSink(self.session_dir)
-        self.voice_client.listen(self.sink)
-        
-        # Check if sink is properly registered
-        is_listening = self.voice_client.is_listening()
-        logger.info("✅ Started listening to voice channel")
-    
-    async def stop(self):
-        """Stop recording and process audio."""
-        logger.info(f"🛑 Stopping recording for {self.voice_channel.name}")
-        
-        if self.voice_client:
-            try:
-                if self.voice_client.is_listening():
-                    self.voice_client.stop_listening()
-                await self.voice_client.disconnect()
-            except Exception as e:
-                logger.error(f"❌ Error during disconnect: {e}")
-        
-        await self._process_recordings()
-    
-    async def _process_recordings(self):
-        """Process and transcribe recordings."""
-        if not self.sink:
-            logger.warning("⚠️ No sink to process")
-            return
-        
-        logger.info("📋 Processing recordings...")
-        
-        # Save all audio files
-        audio_files = await self.sink.save_to_files()
-        
-        logger.info(f"📁 Total valid audio files: {len(audio_files)}")
-        
-        if not audio_files:
-            await self._send_message("⚠️ No valid recordings")
-            return
-        
-        # Transcribe and summarize
-        await self._transcribe_and_summarize(audio_files)
-    
-    async def _transcribe_and_summarize(self, audio_files: list[dict]):
-        """Transcribe audio files and generate summary."""
-        service = TranscriptionService()
-        transcriptions = []
-        
-        for audio_file in audio_files:
-            text = await service.transcribe_file(audio_file['filepath'])
-            if text:
-                transcriptions.append({
-                    'user': audio_file['display_name'],
-                    'text': text
-                })
-        
-        if not transcriptions:
-            await self._send_message("⚠️ No speech detected")
-            return
-        
-        # Create transcript
-        transcript_lines = [
-            f"# Transcript: {self.voice_channel.name}",
-            f"**Channel:** {self.voice_channel.name}",
-            f"**Guild:** {self.voice_channel.guild.name}",
-            f"**Participants:** {len(transcriptions)}",
-            ""
-        ]
-        
-        for t in transcriptions:
-            transcript_lines.extend([f"## {t['user']}", "", t['text'], ""])
-        
-        transcript = "\n".join(transcript_lines)
-        
-        # Generate summary
-        summary = await service.generate_summary(transcript)
-        
-        # Send results
-        await self._send_message(summary)
-        await self._send_transcript(transcript)
-    
-    async def _send_message(self, content: str):
-        """Send message to text channel."""
-        try:
-            webhook = await self.text_channel.create_webhook(
-                name="Scribe AI",
-                reason=f"Results for {self.voice_channel.name}"
-            )
-            await webhook.send(content)
-            await webhook.delete()
-        except Exception as e:
-            logger.error(f"❌ Webhook failed: {e}")
-            try:
-                await self.text_channel.send(content)
-            except:
-                pass
-    
-    async def _send_transcript(self, transcript: str):
-        """Send transcript file to text channel."""
-        try:
-            transcript_file = self.session_dir / "transcript.md"
-            async with aiofiles.open(transcript_file, 'w', encoding='utf-8') as f:
-                await f.write(transcript)
-            
-            webhook = await self.text_channel.create_webhook(
-                name="Scribe Transcript",
-                reason="Transcript file"
-            )
-            
-            async with aiofiles.open(transcript_file, 'rb') as f:
-                file_data = await f.read()
-                file = discord.File(fp=file_data, filename="transcript.md")
-                await webhook.send(file=file)
-            
-            await webhook.delete()
-        except Exception as e:
-            logger.error(f"❌ Transcript file failed: {e}")
-
-
-class ScribeBot(commands.Bot):
-    """Discord transcription bot."""
-    
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.voice_states = True
-        intents.guilds = True
-        intents.guild_messages = True
-        intents.message_content = True
-        
-        super().__init__(
-            command_prefix='/',
-            intents=intents,
-            help_command=None
-        )
-        
-        self.recordings = {}
-    
-    async def setup_hook(self):
-        """Setup bot commands."""
-        logger.info("🤖 Setting up bot...")
-        
-        @self.tree.command(name="start", description="Start recording voice channel")
-        async def start_recording(
-            interaction: discord.Interaction,
-            channel: discord.VoiceChannel | None = None
-        ):
-            await interaction.response.defer(ephemeral=True)
-            
-            target_channel = channel or getattr(interaction.user.voice, 'channel', None)
-            
-            if not target_channel:
-                await interaction.followup.send(
-                    "❌ Specify a voice channel or join one first!",
-                    ephemeral=True
-                )
-                return
-            
-            if target_channel.id in self.recordings:
-                await interaction.followup.send(
-                    f"🔴 Already recording **{target_channel.name}**!",
-                    ephemeral=True
-                )
-                return
-            
-            try:
-                recorder = ChannelRecorder(self, target_channel, interaction.channel)
-                await recorder.start()
-                self.recordings[target_channel.id] = recorder
-                
-                await interaction.followup.send(
-                    f"✅ Started recording **{target_channel.name}**!",
-                    ephemeral=True
-                )
-            except Exception as e:
-                logger.error(f"❌ Start failed: {e}", exc_info=True)
-                await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
-        
-        @self.tree.command(name="stop", description="Stop recording and generate transcript")
-        async def stop_recording(
-            interaction: discord.Interaction,
-            channel: discord.VoiceChannel | None = None
-        ):
-            await interaction.response.defer(ephemeral=True)
-            
-            target_channel = channel or getattr(interaction.user.voice, 'channel', None)
-            
-            if not target_channel:
-                await interaction.followup.send(
-                    "❌ Specify a voice channel or join one first!",
-                    ephemeral=True
-                )
-                return
-            
-            if target_channel.id not in self.recordings:
-                await interaction.followup.send(
-                    f"❌ No recording in **{target_channel.name}**!",
-                    ephemeral=True
-                )
-                return
-            
-            try:
-                recorder = self.recordings[target_channel.id]
-                await interaction.followup.send(
-                    f"🛑 Stopping **{target_channel.name}**...",
-                    ephemeral=True
-                )
-                
-                await recorder.stop()
-                del self.recordings[target_channel.id]
-            except Exception as e:
-                logger.error(f"❌ Stop failed: {e}", exc_info=True)
-                await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
-        
-        try:
-            synced = await self.tree.sync()
-            logger.info(f"✅ Synced {len(synced)} commands")
-        except Exception as e:
-            logger.error(f"❌ Sync failed: {e}")
-    
-    async def on_ready(self):
-        """Called when bot is ready."""
-        logger.info(f"🤖 Ready as {self.user} (ID: {self.user.id})")
-        logger.info(f"📡 Connected to {len(self.guilds)} guilds")
-    
-    async def on_voice_member_speaking_state(self, member: discord.Member, ssrc: int, state):
-        """Handle voice member speaking state changes."""
-        # Forward to active recorders
-        for recorder in self.recordings.values():
-            if hasattr(recorder, 'sink'):
-                recorder.sink.on_voice_member_speaking_state(member, ssrc, state)
-    
-    async def on_voice_member_connect(self, member: discord.Member):
-        """Handle when member connects to voice channel."""
-        logger.info(f"👋 User {member.display_name} joined the channel")
-    
-    async def on_voice_member_disconnect(self, member: discord.Member, ssrc: int | None):
-        """Handle when member disconnects from voice channel."""
-        if member:
-            logger.info(f"👋 User {member.display_name} left the channel (SSRC: {ssrc})")
-        else:
-            logger.info(f"👋 User left the channel (SSRC: {ssrc})")
-        # Forward to active recorders
-        for recorder in self.recordings.values():
-            if hasattr(recorder, 'sink'):
-                recorder.sink.on_voice_member_disconnect(member, ssrc)
-
-
-async def main():
-    """Main entry point."""
-    logger.info("🚀 Starting Discord Scribe Bot...")
-    
-    # Validate environment
-    if not os.getenv('DISCORD_TOKEN'):
-        logger.error("❌ DISCORD_TOKEN not found!")
-        sys.exit(1)
-    
-    if not os.getenv('OPENAI_API_KEY'):
-        logger.error("❌ OPENAI_API_KEY not found!")
-        sys.exit(1)
-    
-    # Ensure recordings directory
-    Path("recordings").mkdir(exist_ok=True)
-    
-    # Run bot
-    bot = ScribeBot()
+    if ctx.guild.id in connections:
+        await ctx.respond("⚠️ Запись уже идет в этом сервере!")
+        return
     
     try:
-        await bot.start(os.getenv('DISCORD_TOKEN'))
-    except KeyboardInterrupt:
-        logger.info("🛑 Shutting down...")
+        # Подключение к голосовому каналу
+        vc = await voice.channel.connect()
+        connections[ctx.guild.id] = vc
+        
+        # Начало записи с WaveSink
+        vc.start_recording(
+            discord.sinks.WaveSink(),
+            once_done,
+            ctx.channel,
+        )
+        
+        await ctx.respond("🔴 Записываю разговор в этом канале...")
+        logger.info(f"🎙️ Started recording in {voice.channel.name}")
+        
     except Exception as e:
-        logger.error(f"💥 Fatal error: {e}", exc_info=True)
-        sys.exit(1)
-    finally:
-        # Cleanup recordings
-        for recorder in list(bot.recordings.values()):
+        logger.error(f"❌ Error starting recording: {e}")
+        await ctx.respond(f"❌ Ошибка при запуске записи: {e}")
+
+async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
+    """Обработка завершенной записи."""
+    try:
+        # Получение списка записанных пользователей
+        recorded_users = [f"<@{user_id}>" for user_id, audio in sink.audio_data.items()]
+        
+        # Отключение от голосового канала
+        await sink.vc.disconnect()
+        
+        # Удаление из connections
+        guild_id = channel.guild.id
+        if guild_id in connections:
+            del connections[guild_id]
+        
+        logger.info(f"📁 Recorded audio for {len(recorded_users)} users")
+        
+        if not sink.audio_data:
+            await channel.send("⚠️ Не удалось записать аудио")
+            return
+        
+        # Обработка каждого пользователя
+        all_transcripts = []
+        
+        for user_id, audio in sink.audio_data.items():
             try:
-                await recorder.stop()
-            except:
-                pass
+                # Получение пользователя
+                user = bot.get_user(user_id)
+                username = user.display_name if user else f"User_{user_id}"
+                
+                logger.info(f"🎵 Processing audio for {username}")
+                
+                # Сохранение аудио во временный файл
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                    temp_file.write(audio.file.read())
+                    temp_file_path = temp_file.name
+                
+                # Транскрипция с помощью OpenAI Whisper
+                with open(temp_file_path, "rb") as audio_file:
+                    transcript_response = await openai_client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        language="ru",  # Русский язык
+                        response_format="text"
+                    )
+                
+                transcript_text = transcript_response.strip()
+                
+                if transcript_text:
+                    all_transcripts.append(f"**{username}:** {transcript_text}")
+                    logger.info(f"✅ Transcribed {username}: {len(transcript_text)} chars")
+                else:
+                    logger.warning(f"⚠️ Empty transcript for {username}")
+                
+                # Удаление временного файла
+                os.unlink(temp_file_path)
+                
+            except Exception as e:
+                logger.error(f"❌ Error processing audio for user {user_id}: {e}")
+                continue
         
-        if not bot.is_closed():
-            await bot.close()
+        if not all_transcripts:
+            await channel.send("⚠️ Не удалось получить транскрипцию")
+            return
         
-        logger.info("👋 Shutdown complete")
+        # Объединение всех транскрипций
+        full_transcript = "\n\n".join(all_transcripts)
+        
+        # Отправка транскрипции
+        transcript_message = f"📝 **Транскрипция для:** {', '.join(recorded_users)}\n\n{full_transcript}"
+        
+        # Разбивка на части если сообщение слишком длинное
+        if len(transcript_message) > 2000:
+            await channel.send(f"📝 **Транскрипция для:** {', '.join(recorded_users)}")
+            # Отправка транскрипции по частям
+            for i in range(0, len(full_transcript), 1900):
+                chunk = full_transcript[i:i+1900]
+                await channel.send(f"```\n{chunk}\n```")
+        else:
+            await channel.send(transcript_message)
+        
+        # Создание саммари с помощью GPT
+        try:
+            logger.info("🤖 Creating summary with GPT...")
+            
+            summary_response = await openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Ты - помощник для анализа разговоров. Создай краткое резюме разговора и выдели ключевые моменты и задачи. Отвечай на русском языке."
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"Проанализируй этот разговор и создай резюме:\n\n{full_transcript}"
+                    }
+                ],
+                temperature=0.7,
+                tools=[{"type": "function", "function": conversationSummarySchema}],
+                tool_choice={"type": "function", "function": {"name": "get_conversation_summary"}}
+            )
+            
+            # Обработка ответа с функциями
+            if summary_response.choices[0].message.tool_calls:
+                tool_call = summary_response.choices[0].message.tool_calls[0]
+                summary_data = eval(tool_call.function.arguments)
+                
+                # Форматирование саммари
+                summary_text = "📋 **Резюме разговора:**\n\n"
+                
+                if summary_data.get("conversation_summary"):
+                    summary_text += "**Ключевые моменты:**\n"
+                    for point in summary_data["conversation_summary"]:
+                        summary_text += f"• {point}\n"
+                    summary_text += "\n"
+                
+                if summary_data.get("action_items"):
+                    summary_text += "**Задачи и действия:**\n"
+                    for item in summary_data["action_items"]:
+                        summary_text += f"• **{item['task']}**"
+                        if item.get("assignees"):
+                            summary_text += f" (Ответственные: {', '.join(item['assignees'])})"
+                        if item.get("due_date"):
+                            summary_text += f" (Срок: {item['due_date']})"
+                        summary_text += "\n"
+                
+                await channel.send(summary_text)
+                logger.info("✅ Summary created and sent")
+            else:
+                # Fallback если нет tool calls
+                summary_text = summary_response.choices[0].message.content
+                await channel.send(f"📋 **Резюме разговора:**\n\n{summary_text}")
+                logger.info("✅ Summary created and sent (fallback)")
+                
+        except Exception as e:
+            logger.error(f"❌ Error creating summary: {e}")
+            await channel.send("⚠️ Не удалось создать резюме разговора")
+        
+        logger.info("✅ Recording processing completed")
+        
+    except Exception as e:
+        logger.error(f"❌ Error in once_done: {e}")
+        await channel.send(f"❌ Ошибка при обработке записи: {e}")
 
+@bot.slash_command(name="stop", description="Остановить запись")
+async def stop_recording(ctx):
+    """Остановить запись."""
+    if ctx.guild.id in connections:
+        vc = connections[ctx.guild.id]
+        vc.stop_recording()
+        del connections[ctx.guild.id]
+        await ctx.respond("🛑 Запись остановлена")
+        logger.info(f"🛑 Recording stopped in {ctx.guild.name}")
+    else:
+        await ctx.respond("🚫 Запись не ведется в этом сервере")
 
+@bot.slash_command(name="status", description="Показать статус бота")
+async def status(ctx):
+    """Показать статус бота."""
+    guild_count = len(bot.guilds)
+    recording_count = len(connections)
+    
+    status_text = f"🤖 **Статус бота:**\n"
+    status_text += f"• Серверов: {guild_count}\n"
+    status_text += f"• Активных записей: {recording_count}\n"
+    status_text += f"• Статус: {'🟢 Онлайн' if bot.is_ready() else '🔴 Офлайн'}"
+    
+    await ctx.respond(status_text)
+
+# Запуск бота
 if __name__ == "__main__":
-    asyncio.run(main())
+    token = env.get("DISCORD_BOT_TOKEN")
+    if not token:
+        logger.error("❌ DISCORD_BOT_TOKEN not found in environment variables")
+        exit(1)
+    
+    logger.info("🚀 Starting Discord bot...")
+    bot.run(token)
