@@ -81,10 +81,20 @@ class MultiUserAudioSink(voice_recv.AudioSink):
             # Log every write() call for debugging
             logger.info(f"📥 write() #{self.write_calls}: user={user}, ssrc={ssrc}")
             
-            # Skip invalid SSRC
+            # Try to get SSRC from user if data.ssrc is None
             if not ssrc or ssrc == 0:
-                logger.info(f"⚠️ Skipping invalid SSRC: {ssrc}")
-                return
+                # Try to find SSRC from user mapping
+                if user and user.id in self.user_info:
+                    # Find SSRC for this user
+                    for mapped_ssrc, mapped_user_id in self.ssrc_to_user.items():
+                        if mapped_user_id == user.id:
+                            ssrc = mapped_ssrc
+                            logger.info(f"🔍 Found SSRC {ssrc} for user {user.display_name}")
+                            break
+                
+                if not ssrc or ssrc == 0:
+                    logger.info(f"⚠️ Skipping invalid SSRC: {ssrc}")
+                    return
             
             # Get Opus data
             opus_data = data.opus
