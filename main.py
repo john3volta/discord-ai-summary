@@ -49,12 +49,18 @@ class UserAudioSink(voice_recv.AudioSink):
         logger.info(f"🎙️ Created sink for {display_name}")
     
     def wants_opus(self) -> bool:
-        return False
+        return True  # Use Opus decoding for better quality
     
     def write(self, user, data: voice_recv.VoiceData):
         try:
             if user and user.id == self.user_id:
+                # Try Opus first, fallback to PCM
                 pcm_data = data.pcm
+                if not pcm_data and hasattr(data, 'opus') and data.opus:
+                    # If no PCM but Opus available, we'll get it from the decoder
+                    logger.debug(f"🎵 {self.display_name}: Using Opus data")
+                    return
+                
                 if pcm_data:
                     self.audio_data.append(pcm_data)
                     self.total_bytes += len(pcm_data)
@@ -92,20 +98,51 @@ class UserAudioSink(voice_recv.AudioSink):
                 logger.warning(f"⚠️ {self.display_name}: Audio too short ({len(combined_audio)} bytes)")
                 return None
             
+            # Filter out silence and improve quality
+            filtered_audio = self._filter_audio(combined_audio)
+            
             with wave.open(str(self.filepath), 'wb') as wav_file:
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
                 wav_file.setframerate(48000)
-                wav_file.writeframes(combined_audio)
+                wav_file.writeframes(filtered_audio)
             
             file_size = self.filepath.stat().st_size
-            duration = len(combined_audio) / (48000 * 2)  # 48kHz, 16-bit
+            duration = len(filtered_audio) / (48000 * 2)  # 48kHz, 16-bit
             logger.info(f"✅ Saved {self.display_name}: {file_size} bytes, {duration:.1f}s duration")
             return self.filepath
             
         except Exception as e:
             logger.error(f"❌ Failed to save {self.display_name}: {e}")
             return None
+    
+    def _filter_audio(self, audio_data: bytes) -> bytes:
+        """Filter audio to improve quality and remove silence."""
+        import struct
+        
+        # Convert bytes to 16-bit samples
+        samples = struct.unpack(f'<{len(audio_data)//2}h', audio_data)
+        
+        # Calculate RMS (Root Mean Square) for volume detection
+        rms = (sum(sample * sample for sample in samples) / len(samples)) ** 0.5
+        
+        # If audio is too quiet, return original
+        if rms < 100:  # Threshold for silence
+            logger.warning(f"⚠️ {self.display_name}: Audio too quiet (RMS: {rms:.1f})")
+            return audio_data
+        
+        # Simple noise gate - remove very quiet samples
+        filtered_samples = []
+        silence_threshold = 50  # Adjust based on testing
+        
+        for sample in samples:
+            if abs(sample) > silence_threshold:
+                filtered_samples.append(sample)
+            else:
+                filtered_samples.append(0)  # Silence
+        
+        # Convert back to bytes
+        return struct.pack(f'<{len(filtered_samples)}h', *filtered_samples)
     
     def clear_audio_data(self):
         """Clear audio data after successful save"""
@@ -233,13 +270,23 @@ class ChannelRecorder:
         if not member.bot:
             await self._add_user(member)
     
+    async def handle_user_left(self, member: discord.Member):
+        """Handle user leaving the voice channel."""
+        if member.id in self.user_sinks:
+            logger.info(f"👋 User {member.display_name} left the channel")
+            # Don't remove sink immediately - let it finish processing
+            # The sink will be cleaned up after processing
+    
     async def stop(self):
         logger.info(f"🛑 Stopping recording for {self.voice_channel.name}")
         
         if self.voice_client:
-            if self.voice_client.is_listening():
-                self.voice_client.stop_listening()
-            await self.voice_client.disconnect()
+            try:
+                if self.voice_client.is_listening():
+                    self.voice_client.stop_listening()
+                await self.voice_client.disconnect()
+            except Exception as e:
+                logger.error(f"❌ Error during voice disconnect: {e}")
         
         await self._process_recordings()
     
@@ -467,6 +514,11 @@ class ScribeBot(commands.Bot):
         if after.channel and after.channel.id in self.recordings:
             recorder = self.recordings[after.channel.id]
             await recorder.handle_user_joined(member)
+        
+        # User left a recording channel
+        if before.channel and before.channel.id in self.recordings:
+            recorder = self.recordings[before.channel.id]
+            await recorder.handle_user_left(member)
 
 
 async def main():
