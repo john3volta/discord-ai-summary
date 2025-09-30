@@ -29,7 +29,7 @@ openai_client = openai.OpenAI(api_key=env.get("OPENAI_API_KEY"))
 try:
     discord.opus.load_opus("/usr/lib/x86_64-linux-gnu/libopus.so.0")
     logger.info("✅ Opus loaded successfully")
-        except Exception as e:
+except Exception as e:
     logger.warning(f"⚠️ Could not load Opus: {e}")
     # Попробуем альтернативные пути
     try:
@@ -55,7 +55,7 @@ async def record(ctx):
     
     if ctx.guild.id in connections:
         await ctx.respond("⚠️ Запись уже идет в этом сервере!")
-                    return
+        return
     
     try:
         # Подключение к голосовому каналу
