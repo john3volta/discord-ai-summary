@@ -60,24 +60,43 @@ async def record(ctx):
     try:
         # Подключение к голосовому каналу с retry
         max_retries = 3
+        vc = None
         for attempt in range(max_retries):
             try:
+                # Добавляем задержку перед подключением
+                if attempt > 0:
+                    await asyncio.sleep(3)
+                
                 vc = await voice.channel.connect()
                 connections[ctx.guild.id] = vc
                 logger.info(f"✅ Connected to voice channel on attempt {attempt + 1}")
-                break
+                
+                # Ждем стабилизации соединения
+                await asyncio.sleep(2)
+                
+                # Проверяем соединение
+                if vc.is_connected():
+                    break
+                else:
+                    logger.warning(f"⚠️ Connection not stable on attempt {attempt + 1}")
+                    if attempt < max_retries - 1:
+                        await vc.disconnect()
+                        vc = None
+                    
             except Exception as connect_error:
                 logger.warning(f"⚠️ Connection attempt {attempt + 1} failed: {connect_error}")
+                if vc:
+                    try:
+                        await vc.disconnect()
+                    except:
+                        pass
+                    vc = None
+                
                 if attempt == max_retries - 1:
                     raise connect_error
-                await asyncio.sleep(2)  # Wait 2 seconds before retry
         
-        # Ждем стабилизации соединения
-        await asyncio.sleep(1)
-        
-        # Проверяем, что соединение активно
-        if not vc.is_connected():
-            raise Exception("Voice connection not established")
+        if not vc or not vc.is_connected():
+            raise Exception("Failed to establish voice connection after all attempts")
         
         # Начало записи с WaveSink
         vc.start_recording(
