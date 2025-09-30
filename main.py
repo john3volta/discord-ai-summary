@@ -9,6 +9,24 @@ from pathlib import Path
 import tempfile
 import os
 
+# Кастомный WaveSink с обработкой ошибок
+class SafeWaveSink(discord.sinks.WaveSink):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.error_count = 0
+        self.max_errors = 10
+    
+    def write(self, data, user):
+        try:
+            super().write(data, user)
+        except (IndexError, ValueError, AttributeError) as e:
+            self.error_count += 1
+            if self.error_count <= self.max_errors:
+                logger.warning(f"⚠️ Audio processing error #{self.error_count}: {e}")
+            if self.error_count > self.max_errors:
+                logger.error(f"❌ Too many audio errors ({self.error_count}), stopping recording")
+                raise
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
@@ -98,9 +116,9 @@ async def record(ctx):
         if not vc or not vc.is_connected():
             raise Exception("Failed to establish voice connection after all attempts")
         
-        # Начало записи с WaveSink
+        # Начало записи с SafeWaveSink
         vc.start_recording(
-            discord.sinks.WaveSink(),
+            SafeWaveSink(),
             once_done,
             ctx.channel,
         )
@@ -118,6 +136,14 @@ async def record(ctx):
 async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
     """Обработка завершенной записи."""
     try:
+        # Проверяем, что sink не сломан
+        if hasattr(sink, 'error_count') and sink.error_count > sink.max_errors:
+            logger.error(f"❌ Recording stopped due to too many errors: {sink.error_count}")
+            try:
+                await channel.send("⚠️ Запись остановлена из-за ошибок обработки аудио")
+            except discord.Forbidden:
+                logger.error("❌ No permission to send error message")
+            return
         # Получение списка записанных пользователей
         recorded_users = [f"<@{user_id}>" for user_id, audio in sink.audio_data.items()]
         
