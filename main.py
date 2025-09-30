@@ -160,16 +160,14 @@ class MultiUserAudioSink(voice_recv.AudioSink):
                     logger.warning(f"⚠️ {display_name}: Audio too short ({len(combined_audio)} bytes)")
                     continue
                 
-                # Save to file
+                # Save Opus data directly (not WAV)
                 timestamp = int(time.time() * 1000)
-                filename = f"user_{user_id}_{timestamp}.wav"
+                filename = f"user_{user_id}_{timestamp}.opus"
                 filepath = self.recordings_dir / filename
                 
-                with wave.open(str(filepath), 'wb') as wav_file:
-                    wav_file.setnchannels(2)  # Opus decoded to stereo
-                    wav_file.setsampwidth(2)  # 16-bit
-                    wav_file.setframerate(48000)  # 48kHz
-                    wav_file.writeframes(combined_audio)
+                # Write raw Opus data
+                with open(filepath, 'wb') as opus_file:
+                    opus_file.write(combined_audio)
                 
                 file_size = filepath.stat().st_size
                 duration = len(combined_audio) / (48000 * 2 * 2)  # 48kHz, stereo, 16-bit
@@ -210,6 +208,12 @@ class TranscriptionService:
             return None
         
         try:
+            # Convert Opus to WAV for Whisper
+            if audio_file.suffix == '.opus':
+                wav_file = audio_file.with_suffix('.wav')
+                await self._convert_opus_to_wav(audio_file, wav_file)
+                audio_file = wav_file
+            
             async with aiofiles.open(audio_file, 'rb') as f:
                 audio_bytes = await f.read()
             
@@ -234,6 +238,40 @@ class TranscriptionService:
         except Exception as e:
             logger.error(f"❌ Transcription failed: {e}")
             return None
+    
+    async def _convert_opus_to_wav(self, opus_file: Path, wav_file: Path) -> None:
+        """Convert Opus file to WAV using ffmpeg."""
+        try:
+            import subprocess
+            import asyncio
+            
+            # Use ffmpeg to convert Opus to WAV
+            cmd = [
+                'ffmpeg', '-i', str(opus_file),
+                '-acodec', 'pcm_s16le',
+                '-ar', '48000',
+                '-ac', '2',
+                '-y',  # Overwrite output file
+                str(wav_file)
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode != 0:
+                logger.error(f"❌ FFmpeg conversion failed: {stderr.decode()}")
+                raise Exception(f"FFmpeg conversion failed: {stderr.decode()}")
+            
+            logger.info(f"✅ Converted {opus_file.name} to {wav_file.name}")
+            
+        except Exception as e:
+            logger.error(f"❌ Opus to WAV conversion failed: {e}")
+            raise
     
     async def generate_summary(self, transcript: str) -> str:
         try:
@@ -534,7 +572,10 @@ class ScribeBot(commands.Bot):
     
     async def on_voice_member_disconnect(self, member: discord.Member, ssrc: int | None):
         """Handle when member disconnects from voice channel."""
-        logger.info(f"👋 User {member.display_name} left the channel (SSRC: {ssrc})")
+        if member:
+            logger.info(f"👋 User {member.display_name} left the channel (SSRC: {ssrc})")
+        else:
+            logger.info(f"👋 User left the channel (SSRC: {ssrc})")
         # Forward to active recorders
         for recorder in self.recordings.values():
             if hasattr(recorder, 'sink'):
