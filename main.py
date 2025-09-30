@@ -8,6 +8,52 @@ from const import conversationSummarySchema
 from pathlib import Path
 import tempfile
 import os
+import io
+import wave
+
+# Кастомный SafeWaveSink с обработкой ошибок
+class SafeWaveSink(discord.sinks.Sink):
+    def __init__(self, *, filters=None):
+        super().__init__(filters=filters)
+        self.encoding = "wav"
+        self.vc = None
+        self.audio_data = {}
+        self.error_count = 0
+        self.max_errors = 100  # Увеличиваем лимит ошибок
+    
+    def write(self, data, user):
+        try:
+            if user not in self.audio_data:
+                file = io.BytesIO()
+                self.audio_data.update({user: discord.sinks.AudioData(file)})
+            
+            file = self.audio_data[user]
+            file.write(data)
+        except (IndexError, ValueError, AttributeError, Exception) as e:
+            self.error_count += 1
+            if self.error_count <= 5:  # Логируем только первые 5 ошибок
+                logger.warning(f"⚠️ Audio processing error #{self.error_count}: {e}")
+            # Не останавливаем запись при ошибках - просто пропускаем плохие пакеты
+    
+    def format_audio(self, audio):
+        """Formats the recorded audio into WAV format."""
+        if self.vc.recording:
+            raise discord.sinks.WaveSinkError(
+                "Audio may only be formatted after recording is finished."
+            )
+        
+        try:
+            data = audio.file
+            with wave.open(data, "wb") as f:
+                f.setnchannels(self.vc.decoder.CHANNELS)
+                f.setsampwidth(self.vc.decoder.SAMPLE_SIZE // self.vc.decoder.CHANNELS)
+                f.setframerate(self.vc.decoder.SAMPLING_RATE)
+            
+            data.seek(0)
+            audio.on_format(self.encoding)
+        except Exception as e:
+            logger.error(f"❌ Error formatting audio: {e}")
+            raise discord.sinks.WaveSinkError(f"Formatting the audio failed: {e}")
 
 
 # Настройка логирования
@@ -64,9 +110,9 @@ async def record(ctx):
         connections[ctx.guild.id] = vc
         logger.info("✅ Connected to voice channel")
         
-        # Начало записи с WaveSink
+        # Начало записи с SafeWaveSink
         vc.start_recording(
-            discord.sinks.WaveSink(),
+            SafeWaveSink(),
             once_done,
             ctx.channel,
         )
