@@ -57,13 +57,32 @@ class UserAudioSink(voice_recv.AudioSink):
             if pcm_data:
                 self.audio_data.append(pcm_data)
                 self.total_bytes += len(pcm_data)
+                
+                # Debug logging every 100 chunks
+                if len(self.audio_data) % 100 == 0:
+                    logger.info(f"🎵 {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes")
+            else:
+                logger.warning(f"⚠️ {self.display_name}: Empty PCM data received")
+        elif user:
+            logger.debug(f"🔇 Ignoring audio from {user.display_name} (not target user)")
+        else:
+            logger.warning(f"⚠️ {self.display_name}: Received data with no user")
     
     async def save_to_file(self) -> Path | None:
+        logger.info(f"💾 Starting save for {self.display_name}: {len(self.audio_data)} chunks, {self.total_bytes} bytes")
+        
         if not self.audio_data:
+            logger.warning(f"⚠️ {self.display_name}: No audio data to save")
             return None
         
         try:
             combined_audio = b''.join(self.audio_data)
+            logger.info(f"🔗 {self.display_name}: Combined audio size: {len(combined_audio)} bytes")
+            
+            # Check minimum file size (at least 1KB)
+            if len(combined_audio) < 1024:
+                logger.warning(f"⚠️ {self.display_name}: Audio too short ({len(combined_audio)} bytes)")
+                return None
             
             with wave.open(str(self.filepath), 'wb') as wav_file:
                 wav_file.setnchannels(1)
@@ -71,7 +90,9 @@ class UserAudioSink(voice_recv.AudioSink):
                 wav_file.setframerate(48000)
                 wav_file.writeframes(combined_audio)
             
-            logger.info(f"💾 Saved {self.display_name}: {self.filepath.stat().st_size} bytes")
+            file_size = self.filepath.stat().st_size
+            duration = len(combined_audio) / (48000 * 2)  # 48kHz, 16-bit
+            logger.info(f"✅ Saved {self.display_name}: {file_size} bytes, {duration:.1f}s duration")
             return self.filepath
             
         except Exception as e:
@@ -213,6 +234,8 @@ class ChannelRecorder:
         await self._process_recordings()
     
     async def _process_recordings(self):
+        logger.info(f"📋 Processing recordings: {len(self.user_sinks)} user sinks")
+        
         if not self.user_sinks:
             await self._send_message("⚠️ No recordings found")
             return
@@ -220,6 +243,8 @@ class ChannelRecorder:
         # Save audio files
         audio_files = []
         for user_id, sink in self.user_sinks.items():
+            logger.info(f"💾 Processing sink for user {user_id}: {len(sink.audio_data)} chunks")
+            
             filepath = await sink.save_to_file()
             if filepath:
                 member = self.voice_channel.guild.get_member(user_id)
@@ -228,7 +253,13 @@ class ChannelRecorder:
                     'filepath': filepath,
                     'display_name': display_name
                 })
+                logger.info(f"✅ Added {display_name} to processing queue")
+            else:
+                logger.warning(f"❌ Failed to save audio for user {user_id}")
+            
             sink.cleanup()
+        
+        logger.info(f"📁 Total valid audio files: {len(audio_files)}")
         
         if not audio_files:
             await self._send_message("⚠️ No valid recordings")
