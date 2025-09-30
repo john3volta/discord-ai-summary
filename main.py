@@ -9,23 +9,6 @@ from pathlib import Path
 import tempfile
 import os
 
-# Кастомный WaveSink с обработкой ошибок
-class SafeWaveSink(discord.sinks.WaveSink):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.error_count = 0
-        self.max_errors = 10
-    
-    def write(self, data, user):
-        try:
-            super().write(data, user)
-        except (IndexError, ValueError, AttributeError) as e:
-            self.error_count += 1
-            if self.error_count <= self.max_errors:
-                logger.warning(f"⚠️ Audio processing error #{self.error_count}: {e}")
-            if self.error_count > self.max_errors:
-                logger.error(f"❌ Too many audio errors ({self.error_count}), stopping recording")
-                raise
 
 # Настройка логирования
 logging.basicConfig(
@@ -76,49 +59,14 @@ async def record(ctx):
         return
     
     try:
-        # Подключение к голосовому каналу с retry
-        max_retries = 3
-        vc = None
-        for attempt in range(max_retries):
-            try:
-                # Добавляем задержку перед подключением
-                if attempt > 0:
-                    await asyncio.sleep(3)
-                
-                vc = await voice.channel.connect()
-                connections[ctx.guild.id] = vc
-                logger.info(f"✅ Connected to voice channel on attempt {attempt + 1}")
-                
-                # Ждем стабилизации соединения
-                await asyncio.sleep(2)
-                
-                # Проверяем соединение
-                if vc.is_connected():
-                    break
-                else:
-                    logger.warning(f"⚠️ Connection not stable on attempt {attempt + 1}")
-                    if attempt < max_retries - 1:
-                        await vc.disconnect()
-                        vc = None
-                    
-            except Exception as connect_error:
-                logger.warning(f"⚠️ Connection attempt {attempt + 1} failed: {connect_error}")
-                if vc:
-                    try:
-                        await vc.disconnect()
-                    except:
-                        pass
-                    vc = None
-                
-                if attempt == max_retries - 1:
-                    raise connect_error
+        # Простое подключение к голосовому каналу
+        vc = await voice.channel.connect()
+        connections[ctx.guild.id] = vc
+        logger.info("✅ Connected to voice channel")
         
-        if not vc or not vc.is_connected():
-            raise Exception("Failed to establish voice connection after all attempts")
-        
-        # Начало записи с SafeWaveSink
+        # Начало записи с WaveSink
         vc.start_recording(
-            SafeWaveSink(),
+            discord.sinks.WaveSink(),
             once_done,
             ctx.channel,
         )
@@ -136,14 +84,6 @@ async def record(ctx):
 async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
     """Обработка завершенной записи."""
     try:
-        # Проверяем, что sink не сломан
-        if hasattr(sink, 'error_count') and sink.error_count > sink.max_errors:
-            logger.error(f"❌ Recording stopped due to too many errors: {sink.error_count}")
-            try:
-                await channel.send("⚠️ Запись остановлена из-за ошибок обработки аудио")
-            except discord.Forbidden:
-                logger.error("❌ No permission to send error message")
-            return
         # Получение списка записанных пользователей
         recorded_users = [f"<@{user_id}>" for user_id, audio in sink.audio_data.items()]
         
