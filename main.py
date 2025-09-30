@@ -50,7 +50,6 @@ class MultiUserAudioSink(voice_recv.AudioSink):
         # Use True - library handles Opus decoding properly
         return True
     
-    @voice_recv.AudioSink.listener()
     def on_voice_member_speaking_state(self, member: discord.Member, ssrc: int, state):
         """Map SSRC to user when they start speaking."""
         self.ssrc_to_user[ssrc] = member.id
@@ -260,6 +259,13 @@ class ChannelRecorder:
         # Create and start single unified sink
         self.sink = MultiUserAudioSink(self.session_dir)
         self.voice_client.listen(self.sink)
+        
+        # Register voice events
+        @self.bot.event
+        async def on_voice_member_speaking_state(member: discord.Member, ssrc: int, state):
+            if hasattr(self, 'sink'):
+                self.sink.on_voice_member_speaking_state(member, ssrc, state)
+        
         logger.info("✅ Started listening to voice channel")
     
     async def stop(self):
