@@ -47,8 +47,8 @@ class MultiUserAudioSink(voice_recv.AudioSink):
         logger.info("🎙️ Created multi-user audio sink")
     
     def wants_opus(self) -> bool:
-        # Use False for PCM - more reliable and less packet loss
-        return False
+        # Use True - library handles Opus decoding properly
+        return True
     
     @voice_recv.AudioSink.listener()
     def on_voice_member_speaking_state(self, member: discord.Member, ssrc: int, state):
@@ -60,8 +60,13 @@ class MultiUserAudioSink(voice_recv.AudioSink):
     def write(self, user, data: voice_recv.VoiceData):
         try:
             ssrc = getattr(data, 'ssrc', None)
-            pcm_data = data.pcm
             
+            # Skip invalid SSRC
+            if not ssrc or ssrc == 0:
+                return
+            
+            # Get PCM data
+            pcm_data = data.pcm
             if not pcm_data or len(pcm_data) == 0:
                 return
             
@@ -71,12 +76,8 @@ class MultiUserAudioSink(voice_recv.AudioSink):
                 user_id = user.id
                 if user_id not in self.user_info:
                     self.user_info[user_id] = user.display_name
-            elif ssrc and ssrc in self.ssrc_to_user:
+            elif ssrc in self.ssrc_to_user:
                 user_id = self.ssrc_to_user[ssrc]
-            
-            # Skip SSRC=0 packets (invalid)
-            if ssrc == 0:
-                return
             
             if user_id:
                 self.user_audio[user_id].append(pcm_data)
@@ -93,7 +94,7 @@ class MultiUserAudioSink(voice_recv.AudioSink):
                 logger.debug(f"⚠️ Unknown user for SSRC {ssrc}, skipping packet")
                 
         except Exception as e:
-            logger.error(f"❌ Error in write(): {e}", exc_info=True)
+            logger.debug(f"⚠️ Error in write() for SSRC {ssrc}: {e}")
     
     async def save_to_files(self) -> list[dict]:
         """Save all user recordings to separate files."""
@@ -120,7 +121,7 @@ class MultiUserAudioSink(voice_recv.AudioSink):
                 filepath = self.recordings_dir / filename
                 
                 with wave.open(str(filepath), 'wb') as wav_file:
-                    wav_file.setnchannels(2)  # Discord sends stereo PCM
+                    wav_file.setnchannels(2)  # Opus decoded to stereo
                     wav_file.setsampwidth(2)  # 16-bit
                     wav_file.setframerate(48000)  # 48kHz
                     wav_file.writeframes(combined_audio)
