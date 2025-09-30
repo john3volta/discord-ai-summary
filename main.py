@@ -25,7 +25,7 @@ load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -60,14 +60,17 @@ class MultiUserAudioSink(voice_recv.AudioSink):
     def write(self, user, data: voice_recv.VoiceData):
         try:
             ssrc = getattr(data, 'ssrc', None)
+            logger.debug(f"📥 write() called: user={user}, ssrc={ssrc}")
             
             # Skip invalid SSRC
             if not ssrc or ssrc == 0:
+                logger.debug(f"⚠️ Skipping invalid SSRC: {ssrc}")
                 return
             
             # Get PCM data
             pcm_data = data.pcm
             if not pcm_data or len(pcm_data) == 0:
+                logger.debug(f"⚠️ Empty PCM data for SSRC {ssrc}")
                 return
             
             # Try to identify user
@@ -76,15 +79,20 @@ class MultiUserAudioSink(voice_recv.AudioSink):
                 user_id = user.id
                 if user_id not in self.user_info:
                     self.user_info[user_id] = user.display_name
+                logger.debug(f"🔍 User from user object: {user.display_name} (ID: {user_id})")
             elif ssrc in self.ssrc_to_user:
                 user_id = self.ssrc_to_user[ssrc]
+                logger.debug(f"🔍 User from SSRC mapping: {user_id} for SSRC {ssrc}")
+            else:
+                logger.debug(f"⚠️ No user mapping for SSRC {ssrc}, user={user}")
+                return
             
             if user_id:
                 self.user_audio[user_id].append(pcm_data)
                 self.total_bytes[user_id] += len(pcm_data)
                 
-                # Debug logging every 200 chunks
-                if len(self.user_audio[user_id]) % 200 == 0:
+                # Debug logging every 50 chunks (чаще)
+                if len(self.user_audio[user_id]) % 50 == 0:
                     display_name = self.user_info.get(user_id, f"User_{user_id}")
                     logger.info(
                         f"🎵 {display_name}: {len(self.user_audio[user_id])} chunks, "
@@ -94,7 +102,7 @@ class MultiUserAudioSink(voice_recv.AudioSink):
                 logger.debug(f"⚠️ Unknown user for SSRC {ssrc}, skipping packet")
                 
         except Exception as e:
-            logger.debug(f"⚠️ Error in write() for SSRC {ssrc}: {e}")
+            logger.error(f"❌ Error in write() for SSRC {ssrc}: {e}", exc_info=True)
     
     async def save_to_files(self) -> list[dict]:
         """Save all user recordings to separate files."""
