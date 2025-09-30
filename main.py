@@ -153,7 +153,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                 
                 # Транскрипция с помощью OpenAI Whisper
                 with open(temp_file_path, "rb") as audio_file:
-                    transcript_response = await openai_client.audio.transcriptions.create(
+                    transcript_response = openai_client.audio.transcriptions.create(
                         model="whisper-1",
                         file=audio_file,
                         language="ru",  # Русский язык
@@ -176,7 +176,10 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                 continue
         
         if not all_transcripts:
-            await channel.send("⚠️ Не удалось получить транскрипцию")
+            try:
+                await channel.send("⚠️ Не удалось получить транскрипцию")
+            except discord.Forbidden:
+                logger.error("❌ No permission to send messages to channel")
             return
         
         # Объединение всех транскрипций
@@ -186,20 +189,24 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         transcript_message = f"📝 **Транскрипция для:** {', '.join(recorded_users)}\n\n{full_transcript}"
         
         # Разбивка на части если сообщение слишком длинное
-        if len(transcript_message) > 2000:
-            await channel.send(f"📝 **Транскрипция для:** {', '.join(recorded_users)}")
-            # Отправка транскрипции по частям
-            for i in range(0, len(full_transcript), 1900):
-                chunk = full_transcript[i:i+1900]
-                await channel.send(f"```\n{chunk}\n```")
-        else:
-            await channel.send(transcript_message)
+        try:
+            if len(transcript_message) > 2000:
+                await channel.send(f"📝 **Транскрипция для:** {', '.join(recorded_users)}")
+                # Отправка транскрипции по частям
+                for i in range(0, len(full_transcript), 1900):
+                    chunk = full_transcript[i:i+1900]
+                    await channel.send(f"```\n{chunk}\n```")
+            else:
+                await channel.send(transcript_message)
+        except discord.Forbidden:
+            logger.error("❌ No permission to send transcript to channel")
+            return
         
         # Создание саммари с помощью GPT
         try:
             logger.info("🤖 Creating summary with GPT...")
             
-            summary_response = await openai_client.chat.completions.create(
+            summary_response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {
