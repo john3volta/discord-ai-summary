@@ -50,14 +50,28 @@ class MultiUserAudioSink(voice_recv.AudioSink):
         logger.info(f"🔧 wants_opus() = {self.wants_opus()}")
     
     def wants_opus(self) -> bool:
-        # Use False - PCM is more modern and reliable
-        return False
+        # Use True - Opus is more reliable in discord-ext-voice-recv
+        return True
     
     def on_voice_member_speaking_state(self, member: discord.Member, ssrc: int, state):
         """Map SSRC to user when they start speaking."""
         self.ssrc_to_user[ssrc] = member.id
         self.user_info[member.id] = member.display_name
         logger.info(f"🔗 Mapped SSRC {ssrc} to {member.display_name} (ID: {member.id})")
+    
+    def on_voice_member_speaking_start(self, member: discord.Member):
+        """Handle when member starts speaking."""
+        logger.info(f"🎤 {member.display_name} started speaking")
+    
+    def on_voice_member_speaking_stop(self, member: discord.Member):
+        """Handle when member stops speaking."""
+        logger.info(f"🔇 {member.display_name} stopped speaking")
+    
+    def on_voice_member_disconnect(self, member: discord.Member, ssrc: int | None):
+        """Handle when member disconnects."""
+        if ssrc and ssrc in self.ssrc_to_user:
+            del self.ssrc_to_user[ssrc]
+        logger.info(f"👋 {member.display_name} disconnected (SSRC: {ssrc})")
     
     def write(self, user, data: voice_recv.VoiceData):
         try:
@@ -72,12 +86,12 @@ class MultiUserAudioSink(voice_recv.AudioSink):
                 logger.info(f"⚠️ Skipping invalid SSRC: {ssrc}")
                 return
             
-            # Get PCM data
-            pcm_data = data.pcm
-            logger.info(f"🔍 PCM data: {len(pcm_data) if pcm_data else 'None'} bytes")
+            # Get Opus data
+            opus_data = data.opus
+            logger.info(f"🔍 Opus data: {len(opus_data) if opus_data else 'None'} bytes")
             
-            if not pcm_data or len(pcm_data) == 0:
-                logger.info(f"⚠️ Empty PCM data for SSRC {ssrc}")
+            if not opus_data or len(opus_data) == 0:
+                logger.info(f"⚠️ Empty Opus data for SSRC {ssrc}")
                 return
             
             # Try to identify user
@@ -96,8 +110,8 @@ class MultiUserAudioSink(voice_recv.AudioSink):
                 return
             
             if user_id:
-                self.user_audio[user_id].append(pcm_data)
-                self.total_bytes[user_id] += len(pcm_data)
+                self.user_audio[user_id].append(opus_data)
+                self.total_bytes[user_id] += len(opus_data)
                 
                 # Log every chunk for debugging
                 display_name = self.user_info.get(user_id, f"User_{user_id}")
@@ -190,12 +204,12 @@ class TranscriptionService:
                 audio_bytes = await f.read()
             
             # Create async context for transcription
-            transcript = await self.client.audio.transcriptions.create(
-                model=self.transcribe_model,
+                transcript = await self.client.audio.transcriptions.create(
+                    model=self.transcribe_model,
                 file=audio_bytes,
-                language=self.speech_language,
-                response_format="text"
-            )
+                    language=self.speech_language,
+                    response_format="text"
+                )
             
             text = transcript if isinstance(transcript, str) else transcript.text
             text = text.strip()
@@ -265,7 +279,7 @@ class ChannelRecorder:
     async def start(self):
         """Start recording the voice channel."""
         self.voice_client = await self.voice_channel.connect(cls=voice_recv.VoiceRecvClient)
-        
+    
         # Register members already in channel
         members = [m for m in self.voice_channel.members if not m.bot]
         logger.info(f"🎙️ Recording {len(members)} users in {self.voice_channel.name}")
@@ -503,6 +517,18 @@ class ScribeBot(commands.Bot):
         for recorder in self.recordings.values():
             if hasattr(recorder, 'sink'):
                 recorder.sink.on_voice_member_speaking_state(member, ssrc, state)
+    
+    async def on_voice_member_connect(self, member: discord.Member):
+        """Handle when member connects to voice channel."""
+        logger.info(f"👋 User {member.display_name} joined the channel")
+    
+    async def on_voice_member_disconnect(self, member: discord.Member, ssrc: int | None):
+        """Handle when member disconnects from voice channel."""
+        logger.info(f"👋 User {member.display_name} left the channel (SSRC: {ssrc})")
+        # Forward to active recorders
+        for recorder in self.recordings.values():
+            if hasattr(recorder, 'sink'):
+                recorder.sink.on_voice_member_disconnect(member, ssrc)
 
 
 async def main():
