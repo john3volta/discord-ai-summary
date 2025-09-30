@@ -46,8 +46,6 @@ class MultiUserAudioSink(voice_recv.AudioSink):
         self.write_calls = 0  # Counter for write() calls
         
         logger.info("🎙️ Created multi-user audio sink")
-        logger.info(f"🔧 Sink initialized: recordings_dir={recordings_dir}")
-        logger.info(f"🔧 wants_opus() = {self.wants_opus()}")
     
     def wants_opus(self) -> bool:
         # Use True - Opus is more reliable in discord-ext-voice-recv
@@ -78,9 +76,6 @@ class MultiUserAudioSink(voice_recv.AudioSink):
             self.write_calls += 1
             ssrc = getattr(data, 'ssrc', None)
             
-            # Log every write() call for debugging
-            logger.info(f"📥 write() #{self.write_calls}: user={user}, ssrc={ssrc}")
-            
             # Try to get SSRC from user if data.ssrc is None
             if not ssrc or ssrc == 0:
                 # Try to find SSRC from user mapping
@@ -89,20 +84,15 @@ class MultiUserAudioSink(voice_recv.AudioSink):
                     for mapped_ssrc, mapped_user_id in self.ssrc_to_user.items():
                         if mapped_user_id == user.id:
                             ssrc = mapped_ssrc
-                            logger.info(f"🔍 Found SSRC {ssrc} for user {user.display_name}")
                             break
                 
                 if not ssrc or ssrc == 0:
-                    logger.info(f"⚠️ Skipping invalid SSRC: {ssrc}")
-                    return
+                    return  # Skip invalid SSRC silently
             
             # Get Opus data
             opus_data = data.opus
-            logger.info(f"🔍 Opus data: {len(opus_data) if opus_data else 'None'} bytes")
-            
             if not opus_data or len(opus_data) == 0:
-                logger.info(f"⚠️ Empty Opus data for SSRC {ssrc}")
-                return
+                return  # Skip empty data silently
             
             # Try to identify user
             user_id = None
@@ -110,43 +100,34 @@ class MultiUserAudioSink(voice_recv.AudioSink):
                 user_id = user.id
                 if user_id not in self.user_info:
                     self.user_info[user_id] = user.display_name
-                logger.info(f"🔍 User from user object: {user.display_name} (ID: {user_id})")
             elif ssrc in self.ssrc_to_user:
                 user_id = self.ssrc_to_user[ssrc]
-                logger.info(f"🔍 User from SSRC mapping: {user_id} for SSRC {ssrc}")
             else:
-                logger.info(f"⚠️ No user mapping for SSRC {ssrc}, user={user}")
-                logger.info(f"🔍 Available SSRC mappings: {list(self.ssrc_to_user.keys())}")
-                return
+                return  # Skip unknown user silently
             
             if user_id:
                 self.user_audio[user_id].append(opus_data)
                 self.total_bytes[user_id] += len(opus_data)
                 
-                # Log every chunk for debugging
-                display_name = self.user_info.get(user_id, f"User_{user_id}")
-                logger.info(
-                    f"🎵 {display_name}: {len(self.user_audio[user_id])} chunks, "
-                    f"{self.total_bytes[user_id]} bytes (SSRC: {ssrc})"
-                )
-            else:
-                logger.info(f"⚠️ Unknown user for SSRC {ssrc}, skipping packet")
+                # Log only every 50 chunks to reduce spam
+                if len(self.user_audio[user_id]) % 50 == 0:
+                    display_name = self.user_info.get(user_id, f"User_{user_id}")
+                    logger.info(
+                        f"🎵 {display_name}: {len(self.user_audio[user_id])} chunks, "
+                        f"{self.total_bytes[user_id]} bytes"
+                    )
                 
         except Exception as e:
-            logger.error(f"❌ Error in write() #{self.write_calls} for SSRC {ssrc}: {e}", exc_info=True)
+            logger.error(f"❌ Error in write() #{self.write_calls}: {e}", exc_info=True)
     
     async def save_to_files(self) -> list[dict]:
         """Save all user recordings to separate files."""
         audio_files = []
         
-        logger.info(f"🔧 save_to_files() called: {len(self.user_audio)} users")
-        logger.info(f"🔧 write() calls made: {self.write_calls}")
-        logger.info(f"🔧 user_audio keys: {list(self.user_audio.keys())}")
-        logger.info(f"🔧 ssrc_to_user: {self.ssrc_to_user}")
+        logger.info(f"💾 Saving recordings for {len(self.user_audio)} users")
         
         for user_id, chunks in self.user_audio.items():
             if not chunks:
-                logger.info(f"⚠️ No chunks for user {user_id}")
                 continue
             
             display_name = self.user_info.get(user_id, f"User_{user_id}")
@@ -338,10 +319,6 @@ class ChannelRecorder:
         
         # Check if sink is properly registered
         is_listening = self.voice_client.is_listening()
-        logger.info(f"🔧 voice_client.is_listening() = {is_listening}")
-        logger.info(f"🔧 voice_client type: {type(self.voice_client)}")
-        logger.info(f"🔧 sink type: {type(self.sink)}")
-        
         logger.info("✅ Started listening to voice channel")
     
     async def stop(self):
