@@ -32,6 +32,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Уменьшаем логирование Opus ошибок (они не критичны)
+logging.getLogger('discord.opus').setLevel(logging.WARNING)
+
 # Инициализация бота (py-cord)
 bot = discord.Bot()
 connections = {}
