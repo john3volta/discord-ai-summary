@@ -7,6 +7,23 @@ from pathlib import Path
 import tempfile
 import os
 
+# Исправление IndexError в strip_header_ext для py-cord
+import discord.voice_client as voice_client
+
+original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
+
+def safe_strip_header_ext(data):
+    """Безопасная версия strip_header_ext с проверкой длины данных"""
+    if len(data) < 2:
+        return data  # Возвращаем данные как есть если слишком короткие
+    
+    try:
+        return original_strip_header_ext(data)
+    except IndexError:
+        return data  # Возвращаем данные как есть при ошибке
+
+voice_client.VoiceClient.strip_header_ext = staticmethod(safe_strip_header_ext)
+
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
