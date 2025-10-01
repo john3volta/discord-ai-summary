@@ -1,6 +1,5 @@
 import discord
 import openai
-import asyncio
 import logging
 from dotenv import load_dotenv
 from os import environ as env
@@ -8,13 +7,6 @@ from const import conversationSummarySchema
 from pathlib import Path
 import tempfile
 import os
-import io
-import wave
-
-# Используем py-cord для записи голоса
-import discord
-
-
 
 # Настройка логирования
 logging.basicConfig(
@@ -112,9 +104,9 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         
         for user_id, audio in sink.audio_data.items():
             try:
-                # Получение пользователя
-                user = bot.get_user(user_id)
-                username = user.display_name if user else f"User_{user_id}"
+                # Получение пользователя из гильдии
+                member = channel.guild.get_member(user_id)
+                username = member.display_name if member else f"User_{user_id}"
                 
                 logger.info(f"🎵 Processing audio for {username}")
                 
