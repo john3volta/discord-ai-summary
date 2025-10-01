@@ -165,6 +165,22 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         # Объединение всех транскрипций
         full_transcript = "\n\n".join(all_transcripts)
         
+        # Сохранение транскрипции в .txt файл
+        try:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            transcript_filename = f"transcript_{timestamp}.txt"
+            
+            with open(transcript_filename, "w", encoding="utf-8") as f:
+                f.write(f"Транскрипция разговора от {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}\n")
+                f.write(f"Участники: {', '.join(recorded_users)}\n")
+                f.write("=" * 50 + "\n\n")
+                f.write(full_transcript)
+            
+            logger.info(f"💾 Transcript saved to {transcript_filename}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not save transcript file: {e}")
+        
         # Отправка транскрипции
         transcript_message = f"📝 **Транскрипция для:** {', '.join(recorded_users)}\n\n{full_transcript}"
         
