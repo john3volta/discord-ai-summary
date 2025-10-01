@@ -137,9 +137,9 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                         model="whisper-1",
                         file=audio_file,
                         language="ru",  # Русский язык
-                        response_format="text"
-                    )
-                
+                    response_format="text"
+                )
+            
                 transcript_text = transcript_response.strip()
                 
                 if transcript_text:
@@ -168,8 +168,12 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         # Сохранение транскрипции в .txt файл
         try:
             import datetime
+            # Создаем папку для транскрипций
+            transcripts_dir = "transcripts"
+            os.makedirs(transcripts_dir, exist_ok=True)
+            
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            transcript_filename = f"transcript_{timestamp}.txt"
+            transcript_filename = os.path.join(transcripts_dir, f"transcript_{timestamp}.txt")
             
             with open(transcript_filename, "w", encoding="utf-8") as f:
                 f.write(f"Транскрипция разговора от {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}\n")
