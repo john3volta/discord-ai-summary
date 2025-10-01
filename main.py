@@ -3,7 +3,6 @@ import openai
 import logging
 from dotenv import load_dotenv
 from os import environ as env
-from const import conversationSummarySchema
 from pathlib import Path
 import tempfile
 import os
@@ -170,54 +169,34 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         try:
             logger.info("🤖 Creating summary with GPT...")
             
+            # Чтение промпта из файла
+            prompt_file = env.get("SUMMARY_PROMPT", "prompt.md")
+            try:
+                with open(prompt_file, "r", encoding="utf-8") as f:
+                    system_prompt = f.read()
+            except FileNotFoundError:
+                logger.warning(f"⚠️ Prompt file {prompt_file} not found, using default")
+                system_prompt = "Ты - помощник для анализа разговоров. Создай краткое резюме разговора и выдели ключевые моменты и задачи. Отвечай на русском языке."
+            
             summary_response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "system",
-                        "content": "Ты - помощник для анализа разговоров. Создай краткое резюме разговора и выдели ключевые моменты и задачи. Отвечай на русском языке."
+                        "content": system_prompt
                     },
                     {
                         "role": "user", 
                         "content": f"Проанализируй этот разговор и создай резюме:\n\n{full_transcript}"
                     }
                 ],
-                temperature=0.7,
-                tools=[{"type": "function", "function": conversationSummarySchema}],
-                tool_choice={"type": "function", "function": {"name": "get_conversation_summary"}}
+                temperature=0.7
             )
             
-            # Обработка ответа с функциями
-            if summary_response.choices[0].message.tool_calls:
-                tool_call = summary_response.choices[0].message.tool_calls[0]
-                summary_data = eval(tool_call.function.arguments)
-                
-                # Форматирование саммари
-                summary_text = "📋 **Резюме разговора:**\n\n"
-                
-                if summary_data.get("conversation_summary"):
-                    summary_text += "**Ключевые моменты:**\n"
-                    for point in summary_data["conversation_summary"]:
-                        summary_text += f"• {point}\n"
-                    summary_text += "\n"
-                
-                if summary_data.get("action_items"):
-                    summary_text += "**Задачи и действия:**\n"
-                    for item in summary_data["action_items"]:
-                        summary_text += f"• **{item['task']}**"
-                        if item.get("assignees"):
-                            summary_text += f" (Ответственные: {', '.join(item['assignees'])})"
-                        if item.get("due_date"):
-                            summary_text += f" (Срок: {item['due_date']})"
-                        summary_text += "\n"
-                
-                await channel.send(summary_text)
-                logger.info("✅ Summary created and sent")
-            else:
-                # Fallback если нет tool calls
-                summary_text = summary_response.choices[0].message.content
-                await channel.send(f"📋 **Резюме разговора:**\n\n{summary_text}")
-                logger.info("✅ Summary created and sent (fallback)")
+            # Простой текстовый ответ
+            summary_text = summary_response.choices[0].message.content
+            await channel.send(f"📋 **Резюме разговора:**\n\n{summary_text}")
+            logger.info("✅ Summary created and sent")
                 
         except Exception as e:
             logger.error(f"❌ Error creating summary: {e}")

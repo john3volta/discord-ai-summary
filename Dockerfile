@@ -20,7 +20,6 @@ RUN pip install --upgrade pip wheel && \
 
 # Copy application code
 COPY main.py .
-COPY const.py .
 COPY prompt.md .
 
 # Create recordings directory
