@@ -188,21 +188,16 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         except Exception as e:
             logger.warning(f"⚠️ Could not save transcript file: {e}")
         
-        # Отправка транскрипции
-        transcript_message = f"📝 **Транскрипция для:** {', '.join(recorded_users)}\n\n{full_transcript}"
-        
-        # Разбивка на части если сообщение слишком длинное
+        # Отправка .txt файла с транскрипцией
         try:
-            if len(transcript_message) > 2000:
-                await channel.send(f"📝 **Транскрипция для:** {', '.join(recorded_users)}")
-                # Отправка транскрипции по частям
-                for i in range(0, len(full_transcript), 1900):
-                    chunk = full_transcript[i:i+1900]
-                    await channel.send(f"```\n{chunk}\n```")
-            else:
-                await channel.send(transcript_message)
+            # Отправляем только .txt файл, без полного текста в сообщении
+            with open(transcript_filename, "rb") as file:
+                await channel.send(
+                    f"📝 **Транскрипция для:** {', '.join(recorded_users)}",
+                    file=discord.File(file, filename=f"transcript_{timestamp}.txt")
+                )
         except discord.Forbidden:
-            logger.error("❌ No permission to send transcript to channel")
+            logger.error("❌ No permission to send transcript file to channel")
             return
         
         # Создание саммари с помощью GPT
