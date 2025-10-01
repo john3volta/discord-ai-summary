@@ -9,14 +9,15 @@ Discord voice transcription bot with AI summarization. **Python implementation**
 - **👥 Speaker identification**: Identifies speakers by Discord display names
 - **📁 File management**: Saves transcripts as .txt files and uploads to Discord
 - **🐳 Docker ready**: Easy deployment with Docker Compose
-- **⚡ Slash commands**: `/start [channel]` and `/stop [channel]` from any text channel
+- **⚡ Slash commands**: `/record [channel]`, `/stop [channel]`, and `/status` from voice channels
 - **🐍 Modern Python**: Built with py-cord, asyncio, and modern type hints
 - **🔧 Error handling**: Robust error handling with monkey patches for py-cord issues
 
 ## Usage
 
-1. `/start [channel]` — Start recording selected voice channel (can be called from any text channel)
+1. `/record [channel]` — Start recording selected voice channel (must be called from a voice channel)
 2. `/stop [channel]` — Stop recording, transcribe audio, and post summary + transcript .txt file
+3. `/status` — Show bot status and current recordings
 
 **Output:**
 - 📝 **Transcript file** - Uploaded as .txt attachment to Discord
@@ -33,7 +34,6 @@ Discord voice transcription bot with AI summarization. **Python implementation**
 - `OPENAI_TRANSCRIBE_MODEL` — Optional, default `whisper-1`
 - `SPEECH_LANG` — Optional, default `ru`
 - `SUMMARY_PROMPT` — Optional, default `prompt.md` (path to summary prompt file)
-- `KEEP_RECORDINGS` — Optional, if set to `true`/`1` recordings are not deleted
 
 ## Docker Deployment
 
@@ -77,12 +77,18 @@ SUMMARY_PROMPT=prompt-en.md
 # For Spanish  
 SPEECH_LANG=es
 SUMMARY_PROMPT=prompt-es.md
+
+# For German
+SPEECH_LANG=de
+SUMMARY_PROMPT=prompt-de.md
 ```
 
 2) Create language-specific prompt files and restart:
 ```bash
 docker compose restart
 ```
+
+**Note**: The bot will automatically detect and transcribe in the specified language, and use the corresponding prompt file for summarization.
 
 ## Architecture
 

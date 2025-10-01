@@ -137,11 +137,11 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                 # Транскрипция с помощью OpenAI Whisper
                 with open(temp_file_path, "rb") as audio_file:
                     transcript_response = openai_client.audio.transcriptions.create(
-                        model="whisper-1",
+                        model=env.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
                         file=audio_file,
-                        language="ru",  # Русский язык
-                    response_format="text"
-                )
+                        language=env.get("SPEECH_LANG", "ru"),  # Язык из переменной окружения
+                        response_format="text"
+                    )
             
                 transcript_text = transcript_response.strip()
                 
