@@ -3,28 +3,25 @@ import openai
 import logging
 from dotenv import load_dotenv
 from os import environ as env
-from pathlib import Path
 import tempfile
 import os
-
-# Исправление IndexError в strip_header_ext для py-cord
 import discord.voice_client as voice_client
 
 original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
 
 def safe_strip_header_ext(data):
-    """Безопасная версия strip_header_ext с проверкой длины данных"""
+    """Safe version of strip_header_ext with data length validation"""
     if len(data) < 2:
-        return data  # Возвращаем данные как есть если слишком короткие
+        return data
     
     try:
         return original_strip_header_ext(data)
     except IndexError:
-        return data  # Возвращаем данные как есть при ошибке
+        return data
 
 voice_client.VoiceClient.strip_header_ext = staticmethod(safe_strip_header_ext)
 
-# Настройка логирования
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -32,24 +29,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Уменьшаем логирование Opus ошибок (они не критичны)
+# Reduce Opus error logging (non-critical)
 logging.getLogger('discord.opus').setLevel(logging.WARNING)
 
-# Инициализация бота (py-cord)
+# Bot initialization
 bot = discord.Bot()
 connections = {}
 load_dotenv()
 
-# Инициализация OpenAI
+# OpenAI client initialization
 openai_client = openai.OpenAI(api_key=env.get("OPENAI_API_KEY"))
 
-# Загрузка Opus (для Linux)
+# Opus library loading for Linux
 try:
     discord.opus.load_opus("/usr/lib/x86_64-linux-gnu/libopus.so.0")
     logger.info("✅ Opus loaded successfully")
 except Exception as e:
     logger.warning(f"⚠️ Could not load Opus: {e}")
-    # Попробуем альтернативные пути
+    # Try alternative paths
     try:
         discord.opus.load_opus("/usr/lib/libopus.so.0")
         logger.info("✅ Opus loaded from alternative path")
@@ -58,56 +55,56 @@ except Exception as e:
 
 @bot.event
 async def on_ready():
-    """Бот готов к работе."""
+    """Bot ready event handler"""
     logger.info(f"🤖 {bot.user} is ready!")
     logger.info(f"🔗 Connected to {len(bot.guilds)} guilds")
 
-@bot.slash_command(name="record", description="Начать запись голосового канала")
+@bot.slash_command(name="record", description="Start recording voice channel")
 async def record(ctx):
-    """Начать запись голосового канала."""
+    """Start recording voice channel"""
     voice = ctx.author.voice
     
     if not voice:
-        await ctx.respond("⚠️ Вы не находитесь в голосовом канале!")
+        await ctx.respond("⚠️ You are not in a voice channel!")
         return
     
     if ctx.guild.id in connections:
-        await ctx.respond("⚠️ Запись уже идет в этом сервере!")
+        await ctx.respond("⚠️ Recording is already in progress on this server!")
         return
     
     try:
-        # Простое подключение к голосовому каналу
+        # Connect to voice channel
         vc = await voice.channel.connect()
         connections[ctx.guild.id] = vc
         logger.info("✅ Connected to voice channel")
         
-        # Начало записи с WaveSink
+        # Start recording with WaveSink
         vc.start_recording(
             discord.sinks.WaveSink(),
             once_done,
             ctx.channel,
         )
         
-        await ctx.respond("🔴 Записываю разговор в этом канале...")
+        await ctx.respond("🔴 Recording conversation in this channel...")
         logger.info(f"🎙️ Started recording in {voice.channel.name}")
         
     except Exception as e:
         logger.error(f"❌ Error starting recording: {e}")
-        await ctx.respond(f"❌ Ошибка при запуске записи: {e}")
-        # Очищаем соединение при ошибке
+        await ctx.respond(f"❌ Error starting recording: {e}")
+        # Clean up connection on error
         if ctx.guild.id in connections:
             del connections[ctx.guild.id]
 
 async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
-    """Обработка завершенной записи."""
+    """Process completed recording"""
     try:
-        # Получение списка записанных пользователей
+        # Get list of recorded users
         recorded_users = [f"<@{user_id}>" for user_id, audio in sink.audio_data.items()]
         
-        # Отключение от голосового канала
+        # Disconnect from voice channel
         await sink.vc.disconnect()
         
-        # Удаление из connections
+        # Remove from connections
         guild_id = channel.guild.id
         if guild_id in connections:
             del connections[guild_id]
@@ -115,33 +112,33 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         logger.info(f"📁 Recorded audio for {len(recorded_users)} users")
         
         if not sink.audio_data:
-            await channel.send("⚠️ Не удалось записать аудио")
+            await channel.send("⚠️ Failed to record audio")
             return
         
-        # Обработка каждого пользователя
+        # Process each user's audio
         all_transcripts = []
         
         for user_id, audio in sink.audio_data.items():
             try:
-                # Получение пользователя из гильдии
+                # Get user from guild
                 member = channel.guild.get_member(user_id)
                 username = member.display_name if member else f"User_{user_id}"
                 
                 logger.info(f"🎵 Processing audio for {username}")
                 
-                # Сохранение аудио во временный файл
+                # Save audio to temporary file
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
                     temp_file.write(audio.file.read())
                     temp_file_path = temp_file.name
                 
-                # Транскрипция с помощью OpenAI Whisper
+                # Transcribe using OpenAI Whisper
                 with open(temp_file_path, "rb") as audio_file:
                     transcript_response = openai_client.audio.transcriptions.create(
                         model=env.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
                         file=audio_file,
-                        language=env.get("SPEECH_LANG", "ru"),  # Язык из переменной окружения
-                        response_format="text"
-                    )
+                        language=env.get("SPEECH_LANG", "ru"),
+                    response_format="text"
+                )
             
                 transcript_text = transcript_response.strip()
                 
@@ -151,7 +148,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                 else:
                     logger.warning(f"⚠️ Empty transcript for {username}")
                 
-                # Удаление временного файла
+                # Clean up temporary file
                 os.unlink(temp_file_path)
                 
             except Exception as e:
@@ -160,18 +157,18 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         
         if not all_transcripts:
             try:
-                await channel.send("⚠️ Не удалось получить транскрипцию")
+                await channel.send("⚠️ Failed to get transcription")
             except discord.Forbidden:
                 logger.error("❌ No permission to send messages to channel")
             return
         
-        # Объединение всех транскрипций
+        # Combine all transcripts
         full_transcript = "\n\n".join(all_transcripts)
         
-        # Сохранение транскрипции в .txt файл
+        # Save transcript to .txt file
         try:
             import datetime
-            # Создаем папку для транскрипций
+            # Create transcripts directory
             transcripts_dir = "transcripts"
             os.makedirs(transcripts_dir, exist_ok=True)
             
@@ -179,8 +176,8 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             transcript_filename = os.path.join(transcripts_dir, f"transcript_{timestamp}.txt")
             
             with open(transcript_filename, "w", encoding="utf-8") as f:
-                f.write(f"Транскрипция разговора от {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}\n")
-                f.write(f"Участники: {', '.join(recorded_users)}\n")
+                f.write(f"Conversation transcript from {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}\n")
+                f.write(f"Participants: {', '.join(recorded_users)}\n")
                 f.write("=" * 50 + "\n\n")
                 f.write(full_transcript)
             
@@ -188,23 +185,23 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         except Exception as e:
             logger.warning(f"⚠️ Could not save transcript file: {e}")
         
-        # Отправка .txt файла с транскрипцией
+        # Send .txt file with transcript
         try:
-            # Отправляем только .txt файл, без полного текста в сообщении
+            # Send only .txt file, no full text in message
             with open(transcript_filename, "rb") as file:
                 await channel.send(
-                    f"📝 **Транскрипция для:** {', '.join(recorded_users)}",
+                    f"📝 **Transcript for:** {', '.join(recorded_users)}",
                     file=discord.File(file, filename=f"transcript_{timestamp}.txt")
                 )
         except discord.Forbidden:
             logger.error("❌ No permission to send transcript file to channel")
             return
         
-        # Создание саммари с помощью GPT
+        # Create summary using GPT
         try:
             logger.info("🤖 Creating summary with GPT...")
             
-            # Чтение промпта из файла
+            # Read prompt from file
             prompt_file = env.get("SUMMARY_PROMPT", "prompt.md")
             try:
                 with open(prompt_file, "r", encoding="utf-8") as f:
@@ -228,47 +225,47 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                 temperature=0.7
             )
             
-            # Простой текстовый ответ
+            # Simple text response
             summary_text = summary_response.choices[0].message.content
-            await channel.send(f"📋 **Резюме разговора:**\n\n{summary_text}")
+            await channel.send(f"📋 **Conversation Summary:**\n\n{summary_text}")
             logger.info("✅ Summary created and sent")
                 
         except Exception as e:
             logger.error(f"❌ Error creating summary: {e}")
-            await channel.send("⚠️ Не удалось создать резюме разговора")
+            await channel.send("⚠️ Failed to create conversation summary")
         
         logger.info("✅ Recording processing completed")
         
     except Exception as e:
         logger.error(f"❌ Error in once_done: {e}")
-        await channel.send(f"❌ Ошибка при обработке записи: {e}")
+        await channel.send(f"❌ Error processing recording: {e}")
 
-@bot.slash_command(name="stop", description="Остановить запись")
+@bot.slash_command(name="stop", description="Stop recording")
 async def stop_recording(ctx):
-    """Остановить запись."""
+    """Stop recording"""
     if ctx.guild.id in connections:
         vc = connections[ctx.guild.id]
         vc.stop_recording()
         del connections[ctx.guild.id]
-        await ctx.respond("🛑 Запись остановлена")
+        await ctx.respond("🛑 Recording stopped")
         logger.info(f"🛑 Recording stopped in {ctx.guild.name}")
     else:
-        await ctx.respond("🚫 Запись не ведется в этом сервере")
+        await ctx.respond("🚫 No recording in progress on this server")
 
-@bot.slash_command(name="status", description="Показать статус бота")
+@bot.slash_command(name="status", description="Show bot status")
 async def status(ctx):
-    """Показать статус бота."""
+    """Show bot status"""
     guild_count = len(bot.guilds)
     recording_count = len(connections)
     
-    status_text = f"🤖 **Статус бота:**\n"
-    status_text += f"• Серверов: {guild_count}\n"
-    status_text += f"• Активных записей: {recording_count}\n"
-    status_text += f"• Статус: {'🟢 Онлайн' if bot.is_ready() else '🔴 Офлайн'}"
+    status_text = f"🤖 **Bot Status:**\n"
+    status_text += f"• Servers: {guild_count}\n"
+    status_text += f"• Active recordings: {recording_count}\n"
+    status_text += f"• Status: {'🟢 Online' if bot.is_ready() else '🔴 Offline'}"
     
     await ctx.respond(status_text)
 
-# Запуск бота
+# Bot startup
 if __name__ == "__main__":
     token = env.get("DISCORD_TOKEN")
     if not token:
