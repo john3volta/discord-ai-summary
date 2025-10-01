@@ -20,19 +20,19 @@ import discord.voice_client as voice_client
 
 original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
 
-def safe_strip_header_ext(self, data):
+def safe_strip_header_ext(data):
     """Безопасная версия strip_header_ext с проверкой длины данных"""
     if len(data) < 2:
         logger.warning(f"⚠️ Data too short for strip_header_ext: {len(data)} bytes")
         return data  # Возвращаем данные как есть
     
     try:
-        return original_strip_header_ext(self, data)
+        return original_strip_header_ext(data)
     except IndexError as e:
         logger.warning(f"⚠️ IndexError in strip_header_ext: {e}, data_len={len(data)}")
         return data  # Возвращаем данные как есть
 
-voice_client.VoiceClient.strip_header_ext = safe_strip_header_ext
+voice_client.VoiceClient.strip_header_ext = staticmethod(safe_strip_header_ext)
 
 
 
