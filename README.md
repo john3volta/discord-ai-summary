@@ -9,14 +9,14 @@ Discord voice transcription bot with AI summarization. **Python implementation**
 - **👥 Speaker identification**: Identifies speakers by Discord display names
 - **📁 File management**: Saves transcripts as .txt files and uploads to Discord
 - **🐳 Docker ready**: Easy deployment with Docker Compose
-- **⚡ Slash commands**: `/record [channel]`, `/stop [channel]`, and `/status` from voice channels
+- **⚡ Slash commands**: `/record`, `/stop`, and `/status` from voice channels
 - **🐍 Modern Python**: Built with py-cord, asyncio, and modern type hints
 - **🔧 Error handling**: Robust error handling with monkey patches for py-cord issues
 
 ## Usage
 
-1. `/record [channel]` — Start recording selected voice channel (must be called from a voice channel)
-2. `/stop [channel]` — Stop recording, transcribe audio, and post summary + transcript .txt file
+1. `/record` — Start recording selected voice channel (must be called from a voice channel)
+2. `/stop` — Stop recording, transcribe audio, and post summary + transcript .txt file
 3. `/status` — Show bot status and current recordings
 
 **Output:**
@@ -28,7 +28,7 @@ Discord voice transcription bot with AI summarization. **Python implementation**
 
 ### Environment Variables
 
-- `DISCORD_TOKEN` — Discord bot token
+- `DISCORD_TOKEN` — Discord bot token (required)
 - `OPENAI_API_KEY` — OpenAI API key (required)
 - `OPENAI_MODEL` — Optional, default `gpt-4o-mini`
 - `OPENAI_TRANSCRIBE_MODEL` — Optional, default `whisper-1`
