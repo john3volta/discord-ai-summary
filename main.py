@@ -11,22 +11,28 @@ import os
 import io
 import wave
 
-# Исследуем проблему - логируем данные перед ошибкой
+# Отключаем расширения заголовков RTP для обхода IndexError
 import discord.sinks.core as sinks_core
+sinks_core.RTP_HEADER_EXTENSIONS = False
 
-original_rawdata_init = sinks_core.RawData.__init__
+# Monkey patch для исправления IndexError в strip_header_ext
+import discord.voice_client as voice_client
 
-def debug_rawdata_init(self, data, client):
-    logger.info(f"🔍 RawData input: len={len(data)}, type={type(data)}")
+original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
+
+def safe_strip_header_ext(self, data):
+    """Безопасная версия strip_header_ext с проверкой длины данных"""
     if len(data) < 2:
-        logger.warning(f"⚠️ Data too short: {data}")
+        logger.warning(f"⚠️ Data too short for strip_header_ext: {len(data)} bytes")
+        return data  # Возвращаем данные как есть
+    
     try:
-        return original_rawdata_init(self, data, client)
-    except (IndexError, ValueError, AttributeError) as e:
-        logger.error(f"❌ RawData error: {e}, data_len={len(data)}, data={data[:10] if len(data) > 0 else 'EMPTY'}")
-        raise  # Пробрасываем ошибку чтобы понять где она происходит
+        return original_strip_header_ext(self, data)
+    except IndexError as e:
+        logger.warning(f"⚠️ IndexError in strip_header_ext: {e}, data_len={len(data)}")
+        return data  # Возвращаем данные как есть
 
-sinks_core.RawData.__init__ = debug_rawdata_init
+voice_client.VoiceClient.strip_header_ext = safe_strip_header_ext
 
 
 
