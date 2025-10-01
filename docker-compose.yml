@@ -10,9 +10,7 @@ services:
       - OPENAI_TRANSCRIBE_MODEL=${OPENAI_TRANSCRIBE_MODEL:-whisper-1}
       - SPEECH_LANG=${SPEECH_LANG:-ru}
       - SUMMARY_PROMPT=${SUMMARY_PROMPT:-prompt.md}
-      - KEEP_RECORDINGS=${KEEP_RECORDINGS:-false}
     volumes:
-      - ./recordings:/app/recordings
       - ./prompt.md:/app/prompt.md:ro
 
 

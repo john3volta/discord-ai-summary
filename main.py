@@ -207,7 +207,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                 system_prompt = f.read()
             
             summary_response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=env.get("OPENAI_MODEL", "gpt-4o-mini"),
                 messages=[
                     {
                         "role": "system",

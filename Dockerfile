@@ -22,8 +22,6 @@ RUN pip install --upgrade pip wheel && \
 COPY main.py .
 COPY prompt.md .
 
-# Create recordings directory
-RUN mkdir -p recordings
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1
