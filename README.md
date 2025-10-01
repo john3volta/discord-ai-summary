@@ -1,20 +1,27 @@
 # Discord AI Summary
 
-Discord voice transcription bot with AI summarization. **Python implementation** with OpenAI Whisper + GPT integration for meeting summaries.
+Discord voice transcription bot with AI summarization. **Python implementation** using `py-cord` with OpenAI Whisper + GPT integration for meeting summaries.
 
 ## Features
 
 - **🎙️ Voice transcription**: Records Discord voice channels using OpenAI Whisper
-- **🤖 AI summarization**: Generates meeting summaries using GPT-4o-mini  
-- **👥 Per-user separation**: Creates transcripts with speaker identification
+- **🤖 AI summarization**: Generates meeting summaries using GPT-4o-mini with custom prompts
+- **👥 Speaker identification**: Identifies speakers by Discord display names
+- **📁 File management**: Saves transcripts as .txt files and uploads to Discord
 - **🐳 Docker ready**: Easy deployment with Docker Compose
 - **⚡ Slash commands**: `/start [channel]` and `/stop [channel]` from any text channel
-- **🐍 Modern Python**: Built with discord.py, asyncio, and modern type hints
+- **🐍 Modern Python**: Built with py-cord, asyncio, and modern type hints
+- **🔧 Error handling**: Robust error handling with monkey patches for py-cord issues
 
 ## Usage
 
 1. `/start [channel]` — Start recording selected voice channel (can be called from any text channel)
-2. `/stop [channel]` — Stop recording, transcribe audio, and post summary + transcript file
+2. `/stop [channel]` — Stop recording, transcribe audio, and post summary + transcript .txt file
+
+**Output:**
+- 📝 **Transcript file** - Uploaded as .txt attachment to Discord
+- 📋 **AI Summary** - Structured summary based on custom prompt
+- 💾 **Local storage** - Transcripts saved to `transcripts/` folder
 
 ## Configuration
 
@@ -82,15 +89,23 @@ docker compose restart
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
 │   Discord Bot   │───▶│  Voice Recorder  │───▶│  Transcription  │
-│   (main.py)     │    │  (AudioSink)     │    │   (OpenAI)      │
+│   (py-cord)     │    │  (WaveSink)      │    │   (OpenAI)      │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
           │                       │                       │
           ▼                       ▼                       ▼
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Webhooks      │    │   File Manager   │    │   AI Summary    │
-│   (Results)     │    │   (WAV files)    │    │   (GPT-4o)      │
+│   File Upload   │    │   File Manager   │    │   AI Summary    │
+│   (.txt files)  │    │   (WAV files)    │    │   (GPT-4o)      │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
 ```
+
+## Technical Details
+
+- **Library**: `py-cord` (discord.py fork with voice support)
+- **Audio format**: Opus → WAV conversion via FFmpeg
+- **Transcription**: OpenAI Whisper API
+- **Summarization**: OpenAI GPT-4o-mini with custom prompts
+- **Error handling**: Monkey patches for py-cord voice issues
 
 ## Troubleshooting
 
@@ -110,6 +125,11 @@ docker compose restart
 - Ensure bot has Connect permission
 - Check voice channel isn't full
 - Verify FFmpeg is installed
+
+**❌ "IndexError: index out of range"**
+- This is a known py-cord issue, handled by monkey patches
+- Bot will continue working despite these errors
+- Check logs for "safe_strip_header_ext" messages
 
 ### Debug Mode
 ```bash
