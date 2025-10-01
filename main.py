@@ -203,12 +203,8 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             
             # Read prompt from file
             prompt_file = env.get("SUMMARY_PROMPT", "prompt.md")
-            try:
-                with open(prompt_file, "r", encoding="utf-8") as f:
-                    system_prompt = f.read()
-            except FileNotFoundError:
-                logger.warning(f"⚠️ Prompt file {prompt_file} not found, using default")
-                system_prompt = "Ты - помощник для анализа разговоров. Создай краткое резюме разговора и выдели ключевые моменты и задачи. Отвечай на русском языке."
+            with open(prompt_file, "r", encoding="utf-8") as f:
+                system_prompt = f.read()
             
             summary_response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -219,7 +215,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                     },
                     {
                         "role": "user", 
-                        "content": f"Проанализируй этот разговор и создай резюме:\n\n{full_transcript}"
+                        "content": full_transcript
                     }
                 ],
                 temperature=0.7
