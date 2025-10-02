@@ -99,7 +99,8 @@ async def record(ctx):
         await ctx.respond(f"❌ Error starting recording: {e}")
         
         # Очистить состояние voice_client
-        ctx.guild._voice_client = None
+        if ctx.guild.voice_client:
+            await ctx.guild.voice_client.disconnect(force=True)
         
         # Clean up connections dict
         if ctx.guild.id in connections:
