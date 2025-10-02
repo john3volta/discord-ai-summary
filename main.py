@@ -24,17 +24,17 @@ def safe_strip_header_ext(data):
 voice_client.VoiceClient.strip_header_ext = staticmethod(safe_strip_header_ext)
 
 async def stop_recording_after_20min(channel):
-    """Stop recording after 20 minutes"""
+    """Stop recording after 1 minute (for testing)"""
     try:
-        await asyncio.sleep(20 * 60)  # 20 minutes
+        await asyncio.sleep(60)  # 1 minute for testing
         
-        logger.info("⏰ 20 minutes reached, stopping recording")
+        logger.info("⏰ 1 minute reached, stopping recording")
         
         # Find the voice client for this guild
         guild = channel.guild
         if guild.voice_client:
             guild.voice_client.stop_recording()
-            logger.info("🛑 Recording stopped after 20 minutes")
+            logger.info("🛑 Recording stopped after 1 minute")
         else:
             logger.warning("No voice client found to stop recording")
                 
@@ -116,23 +116,17 @@ async def record(ctx):
         
         # Start recording with WaveSink
         vc.start_recording(
-            discord.sinks.WaveSink(
-                filters={
-                    'voice_activity': True,
-                    'silence_threshold': 0.1,
-                    'silence_duration': 1.0
-                }
-            ),
+            discord.sinks.WaveSink(),
             once_done,
             ctx.channel,
         )
         
-        # Start 20-minute timer for the entire recording
+        # Start 1-minute timer for testing
         global recording_timer
         recording_timer = asyncio.create_task(
             stop_recording_after_20min(ctx.channel)
         )
-        logger.info("⏰ Started 20-minute timer for recording")
+        logger.info("⏰ Started 1-minute timer for testing")
         
         # Update the response
         await ctx.edit(content="🔴 Recording conversation in this channel...")
@@ -259,11 +253,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         # Disconnect from voice channel
         await sink.vc.disconnect()
         
-        # Remove from connections
         guild_id = channel.guild.id
-        if guild_id in connections:
-            del connections[guild_id]
-        
         logger.info(f"📁 Recorded audio for {len(recorded_users)} users")
         
         if not sink.audio_data:
@@ -290,13 +280,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             try:
                 vc = connections[channel.guild.id]
                 vc.start_recording(
-                    discord.sinks.WaveSink(
-                        filters={
-                            'voice_activity': True,
-                            'silence_threshold': 0.1,
-                            'silence_duration': 1.0
-                        }
-                    ),
+                    discord.sinks.WaveSink(),
                     once_done,
                     channel,
                 )
@@ -305,7 +289,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                 recording_timer = asyncio.create_task(
                     stop_recording_after_20min(channel)
                 )
-                logger.info("🔄 Recording restarted for next 20 minutes")
+                logger.info("🔄 Recording restarted for next 1 minute")
                 
             except Exception as e:
                 logger.error(f"❌ Error restarting recording: {e}")
@@ -414,6 +398,10 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             await channel.send("⚠️ Failed to create conversation summary")
         
         logger.info("✅ Recording processing completed")
+        
+        # Remove from connections (final cleanup)
+        if guild_id in connections:
+            del connections[guild_id]
         
         # Clean up global variables
         parts.clear()
