@@ -113,54 +113,124 @@ async def record(ctx):
         if ctx.guild.voice_client:
             await ctx.guild.voice_client.disconnect()
 
+def split_audio_by_duration(audio_path, max_duration_minutes=20):
+    """Split audio file into chunks by duration"""
+    try:
+        audio = AudioSegment.from_wav(audio_path)
+        duration_ms = len(audio)
+        max_duration_ms = max_duration_minutes * 60 * 1000
+        
+        if duration_ms <= max_duration_ms:
+            return [audio_path]
+        
+        chunks = []
+        chunk_count = (duration_ms + max_duration_ms - 1) // max_duration_ms
+        
+        for i in range(chunk_count):
+            start_ms = i * max_duration_ms
+            end_ms = min((i + 1) * max_duration_ms, duration_ms)
+            
+            chunk = audio[start_ms:end_ms]
+            chunk_path = audio_path.replace('.wav', f'_chunk_{i+1}.wav')
+            chunk.export(chunk_path, format="wav")
+            chunks.append(chunk_path)
+        
+        logger.info(f"📂 Split audio into {len(chunks)} chunks")
+        return chunks
+        
+    except Exception as e:
+        logger.error(f"❌ Error splitting audio: {e}")
+        return [audio_path]
+
 async def process_audio_file(audio_data, username, user_id):
     """Process single audio file asynchronously"""
     try:
-        # Get audio data
         audio_bytes = audio_data.file.read()
         
-        # Validate file size (OpenAI limit is 25MB)
-        max_size = 25 * 1024 * 1024  # 25MB
+        # Validate file size
+        max_size = 20 * 1024 * 1024
         if len(audio_bytes) > max_size:
-            logger.warning(f"⚠️ Audio file too large for {username}: {len(audio_bytes)} bytes")
+            logger.warning(f"⚠️ Audio file too large for {username}: {len(audio_bytes)} bytes (max 20MB)")
             return None
         
         # Validate minimum size
-        if len(audio_bytes) < 1024:  # Less than 1KB
+        if len(audio_bytes) < 1024:
             logger.warning(f"⚠️ Audio file too small for {username}: {len(audio_bytes)} bytes")
             return None
         
-        # Save audio to temporary file
+        # Save audio to temporary WAV file
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
             temp_file.write(audio_bytes)
-            temp_file_path = temp_file.name
+            temp_wav_path = temp_file.name
+        
+        # Split audio into chunks if too long (20 minutes max per chunk)
+        def split_audio():
+            return split_audio_by_duration(temp_wav_path, max_duration_minutes=20)
+        
+        # Run splitting in thread pool
+        audio_chunks = await asyncio.to_thread(split_audio)
+        
+        all_transcripts = []
         
         try:
-            # Transcribe using OpenAI Whisper in thread pool
-            def transcribe_audio():
-                with open(temp_file_path, "rb") as audio_file:
-                    return openai_client.audio.transcriptions.create(
-                        model=env.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
-                        file=audio_file,
-                        language=env.get("SPEECH_LANG", "ru"),
-                        response_format="text"
-                    )
+            for i, chunk_path in enumerate(audio_chunks):
+                # Convert chunk to MP3 64kbps
+                temp_mp3_path = chunk_path.replace('.wav', '.mp3')
+                
+                def convert_to_mp3():
+                    audio = AudioSegment.from_wav(chunk_path)
+                    # Convert to MP3 with 64kbps bitrate
+                    audio.export(temp_mp3_path, format="mp3", bitrate="64k")
+                    return temp_mp3_path
+                
+                # Run conversion in thread pool
+                await asyncio.to_thread(convert_to_mp3)
+                
+                # Check MP3 file size
+                mp3_size = os.path.getsize(temp_mp3_path)
+                chunk_info = f"chunk {i+1}/{len(audio_chunks)}" if len(audio_chunks) > 1 else ""
+                logger.info(f"📊 Converted {username} {chunk_info}: WAV → MP3 {mp3_size} bytes")
+                
+                # Transcribe using OpenAI Whisper in thread pool
+                def transcribe_audio():
+                    with open(temp_mp3_path, "rb") as audio_file:
+                        return openai_client.audio.transcriptions.create(
+                            model=env.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
+                            file=audio_file,
+                            language=env.get("SPEECH_LANG", "ru"),
+                            response_format="text"
+                        )
+                
+                # Run transcription in thread pool to avoid blocking
+                transcript_response = await asyncio.to_thread(transcribe_audio)
+                transcript_text = transcript_response.strip()
+                
+                if transcript_text:
+                    if len(audio_chunks) > 1:
+                        all_transcripts.append(f"[Часть {i+1}] {transcript_text}")
+                    else:
+                        all_transcripts.append(transcript_text)
+                    logger.info(f"✅ Transcribed {username} {chunk_info}: {len(transcript_text)} chars")
+                else:
+                    logger.warning(f"⚠️ Empty transcript for {username} {chunk_info}")
+                
+                # Clean up chunk files
+                try:
+                    os.unlink(chunk_path)
+                    os.unlink(temp_mp3_path)
+                except OSError:
+                    pass
             
-            # Run transcription in thread pool to avoid blocking
-            transcript_response = await asyncio.to_thread(transcribe_audio)
-            transcript_text = transcript_response.strip()
-            
-            if transcript_text:
-                logger.info(f"✅ Transcribed {username}: {len(transcript_text)} chars")
-                return transcript_text
+            if all_transcripts:
+                return "\n\n".join(all_transcripts)
             else:
-                logger.warning(f"⚠️ Empty transcript for {username}")
+                logger.warning(f"⚠️ No transcripts for {username}")
                 return None
                 
         finally:
-            # Clean up temporary file
+            # Clean up temporary files
             try:
-                os.unlink(temp_file_path)
+                os.unlink(temp_wav_path)
             except OSError:
                 pass
                 
