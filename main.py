@@ -251,6 +251,7 @@ async def create_summary_async(full_transcript):
 
 async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
     """Process completed recording asynchronously"""
+    global recording_timer
     try:
         # Get list of recorded users
         recorded_users = [f"<@{user_id}>" for user_id, audio in sink.audio_data.items()]
@@ -301,7 +302,6 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                 )
                 
                 # Restart timer
-                global recording_timer
                 recording_timer = asyncio.create_task(
                     stop_recording_after_20min(channel)
                 )
@@ -416,7 +416,6 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         logger.info("✅ Recording processing completed")
         
         # Clean up global variables
-        global recording_timer
         parts.clear()
         if recording_timer:
             recording_timer.cancel()
@@ -432,13 +431,13 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
 @bot.slash_command(name="stop", description="Stop recording")
 async def stop_recording(ctx):
     """Stop recording"""
+    global recording_timer
     if ctx.guild.id in connections:
         vc = connections[ctx.guild.id]
         vc.stop_recording()
         del connections[ctx.guild.id]
         
         # Cancel recording timer
-        global recording_timer
         if recording_timer:
             recording_timer.cancel()
             recording_timer = None
