@@ -23,6 +23,32 @@ def safe_strip_header_ext(data):
 
 voice_client.VoiceClient.strip_header_ext = staticmethod(safe_strip_header_ext)
 
+async def stop_user_recording_after_20min(user_id, channel):
+    """Stop recording for a specific user after 20 minutes"""
+    try:
+        await asyncio.sleep(20 * 60)  # 20 minutes
+        
+        # Check if user is still recording
+        if user_id in user_recording_start:
+            logger.info(f"⏰ 20 minutes reached for user {user_id}, stopping recording")
+            
+            # Stop recording for this user
+            if user_id in user_timers:
+                user_timers[user_id].cancel()
+                del user_timers[user_id]
+            
+            # Mark that this user's recording should be stopped
+            user_recording_start[user_id] = None
+            
+            # Log notification only (no chat message)
+            logger.info(f"⏰ 20 minutes reached for user {user_id}, stopping recording")
+                
+    except asyncio.CancelledError:
+        # Timer was cancelled (user stopped talking)
+        logger.info(f"Timer cancelled for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error in stop_user_recording_after_20min for user {user_id}: {e}")
+
 # Logging configuration
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +63,12 @@ logging.getLogger('discord.opus').setLevel(logging.WARNING)
 # Bot initialization
 bot = discord.Bot()
 connections = {}
+
+# Global variables for 20-minute recording chunks
+user_parts = {}  # {user_id: [part1, part2, part3]}
+user_recording_start = {}  # {user_id: start_time}
+user_timers = {}  # {user_id: timer_task}
+
 load_dotenv()
 
 # OpenAI client initialization
@@ -101,6 +133,16 @@ async def record(ctx):
             ctx.channel,
         )
         
+        # Start 20-minute timer for each user in the voice channel
+        for member in voice.channel.members:
+            if not member.bot and member.voice:
+                user_id = member.id
+                user_recording_start[user_id] = asyncio.get_event_loop().time()
+                user_timers[user_id] = asyncio.create_task(
+                    stop_user_recording_after_20min(user_id, ctx.channel)
+                )
+                logger.info(f"⏰ Started 20-minute timer for {member.display_name}")
+        
         # Update the response
         await ctx.edit(content="🔴 Recording conversation in this channel...")
         logger.info(f"🎙️ Started recording in {voice.channel.name}")
@@ -114,46 +156,12 @@ async def record(ctx):
         if ctx.guild.voice_client:
             await ctx.guild.voice_client.disconnect()
 
-def split_audio_by_duration(audio_path, max_duration_minutes=20):
-    """Split audio file into chunks by duration"""
-    try:
-        audio = AudioSegment.from_wav(audio_path)
-        duration_ms = len(audio)
-        max_duration_ms = max_duration_minutes * 60 * 1000
-        
-        if duration_ms <= max_duration_ms:
-            return [audio_path]
-        
-        chunks = []
-        chunk_count = (duration_ms + max_duration_ms - 1) // max_duration_ms
-        
-        for i in range(chunk_count):
-            start_ms = i * max_duration_ms
-            end_ms = min((i + 1) * max_duration_ms, duration_ms)
-            
-            chunk = audio[start_ms:end_ms]
-            chunk_path = audio_path.replace('.wav', f'_chunk_{i+1}.wav')
-            chunk.export(chunk_path, format="wav")
-            chunks.append(chunk_path)
-        
-        logger.info(f"📂 Split audio into {len(chunks)} chunks")
-        return chunks
-        
-    except Exception as e:
-        logger.error(f"❌ Error splitting audio: {e}")
-        return [audio_path]
 
 async def process_audio_file(audio_data, username, user_id):
     """Process single audio file asynchronously"""
     try:
         audio_bytes = audio_data.file.read()
-        
-        # Validate file size
-        max_size = 20 * 1024 * 1024
-        if len(audio_bytes) > max_size:
-            logger.warning(f"⚠️ Audio file too large for {username}: {len(audio_bytes)} bytes (max 20MB)")
-            return None
-        
+                
         # Validate minimum size
         if len(audio_bytes) < 1024:
             logger.warning(f"⚠️ Audio file too small for {username}: {len(audio_bytes)} bytes")
@@ -164,80 +172,57 @@ async def process_audio_file(audio_data, username, user_id):
             temp_file.write(audio_bytes)
             temp_wav_path = temp_file.name
         
-        # Split audio into chunks if too long (20 minutes max per chunk)
-        def split_audio():
-            return split_audio_by_duration(temp_wav_path, max_duration_minutes=20)
+        # Convert WAV to MP3 64kbps
+        temp_mp3_path = temp_wav_path.replace('.wav', '.mp3')
         
-        # Run splitting in thread pool
-        audio_chunks = await asyncio.to_thread(split_audio)
+        def convert_to_mp3():
+            audio = AudioSegment.from_wav(temp_wav_path)
+            # Convert to MP3 with 64kbps bitrate
+            audio.export(temp_mp3_path, format="mp3", bitrate="64k")
+            return temp_mp3_path
         
-        all_transcripts = []
+        # Run conversion in thread pool
+        await asyncio.to_thread(convert_to_mp3)
         
-        try:
-            for i, chunk_path in enumerate(audio_chunks):
-                # Convert chunk to MP3 64kbps
-                temp_mp3_path = chunk_path.replace('.wav', '.mp3')
-                
-                def convert_to_mp3():
-                    audio = AudioSegment.from_wav(chunk_path)
-                    # Convert to MP3 with 64kbps bitrate
-                    audio.export(temp_mp3_path, format="mp3", bitrate="64k")
-                    return temp_mp3_path
-                
-                # Run conversion in thread pool
-                await asyncio.to_thread(convert_to_mp3)
-                
-                # Check MP3 file size
-                mp3_size = os.path.getsize(temp_mp3_path)
-                chunk_info = f"chunk {i+1}/{len(audio_chunks)}" if len(audio_chunks) > 1 else ""
-                logger.info(f"📊 Converted {username} {chunk_info}: WAV → MP3 {mp3_size} bytes")
-                
-                # Transcribe using OpenAI Whisper in thread pool
-                def transcribe_audio():
-                    with open(temp_mp3_path, "rb") as audio_file:
-                        return openai_client.audio.transcriptions.create(
-                            model=env.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
-                            file=audio_file,
-                            language=env.get("SPEECH_LANG", "ru"),
-                            response_format="text"
-                        )
-                
-                # Run transcription in thread pool to avoid blocking
-                transcript_response = await asyncio.to_thread(transcribe_audio)
-                transcript_text = transcript_response.strip()
-                
-                if transcript_text:
-                    if len(audio_chunks) > 1:
-                        all_transcripts.append(f"[Часть {i+1}] {transcript_text}")
-                    else:
-                        all_transcripts.append(transcript_text)
-                    logger.info(f"✅ Transcribed {username} {chunk_info}: {len(transcript_text)} chars")
-                else:
-                    logger.warning(f"⚠️ Empty transcript for {username} {chunk_info}")
-                
-                # Clean up chunk files
-                try:
-                    os.unlink(chunk_path)
-                    os.unlink(temp_mp3_path)
-                except OSError:
-                    pass
-            
-            if all_transcripts:
-                return "\n\n".join(all_transcripts)
-            else:
-                logger.warning(f"⚠️ No transcripts for {username}")
-                return None
-                
-        finally:
-            # Clean up temporary files
-            try:
-                os.unlink(temp_wav_path)
-            except OSError:
-                pass
+        # Check MP3 file size (OpenAI limit is 25MB)
+        mp3_size = os.path.getsize(temp_mp3_path)
+        if mp3_size > 24 * 1024 * 1024:
+            logger.warning(f"⚠️ MP3 file too large for {username}: {mp3_size} bytes (max 24MB)")
+            return None
+        
+        logger.info(f"📊 Converted {username}: WAV → MP3 {mp3_size} bytes")
+        
+        # Transcribe using OpenAI Whisper in thread pool
+        def transcribe_audio():
+            with open(temp_mp3_path, "rb") as audio_file:
+                return openai_client.audio.transcriptions.create(
+                    model=env.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
+                    file=audio_file,
+                    language=env.get("SPEECH_LANG", "ru"),
+                    response_format="text"
+                )
+        
+        # Run transcription in thread pool to avoid blocking
+        transcript_response = await asyncio.to_thread(transcribe_audio)
+        transcript_text = transcript_response.strip()
+        
+        if transcript_text:
+            logger.info(f"✅ Transcribed {username}: {len(transcript_text)} chars")
+            return transcript_text
+        else:
+            logger.warning(f"⚠️ Empty transcript for {username}")
+            return None
                 
     except Exception as e:
         logger.error(f"❌ Error processing audio for user {user_id}: {e}")
         return None
+    finally:
+        # Clean up temporary files
+        try:
+            os.unlink(temp_wav_path)
+            os.unlink(temp_mp3_path)
+        except OSError:
+            pass
 
 async def create_summary_async(full_transcript):
     """Create summary asynchronously"""
@@ -293,7 +278,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             await channel.send("⚠️ Failed to record audio")
             return
         
-        # Process each user's audio concurrently
+        # Process each user's audio parts concurrently
         all_transcripts = []
         
         # Create tasks for concurrent processing
@@ -303,24 +288,51 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             member = channel.guild.get_member(user_id)
             username = member.display_name if member else f"User_{user_id}"
             
-            logger.info(f"🎵 Processing audio for {username}")
+            # Add current audio to user's parts
+            if user_id not in user_parts:
+                user_parts[user_id] = []
+            user_parts[user_id].append(audio)
             
-            # Create task for processing this user's audio
-            task = asyncio.create_task(process_audio_file(audio, username, user_id))
-            tasks.append((task, username))
+            logger.info(f"🎵 Processing audio parts for {username} (total parts: {len(user_parts[user_id])})")
+            
+            # Process all parts for this user
+            user_transcripts = []
+            for i, part_audio in enumerate(user_parts[user_id]):
+                part_name = f"part {i+1}" if len(user_parts[user_id]) > 1 else ""
+                logger.info(f"🎵 Processing {username} {part_name}")
+                
+                # Create task for processing this part
+                task = asyncio.create_task(process_audio_file(part_audio, username, user_id))
+                tasks.append((task, username, part_name))
         
         # Wait for all tasks to complete with timeout
         try:
-            for task, username in tasks:
+            # Group transcripts by user
+            user_transcripts = {}
+            for task, username, part_name in tasks:
                 try:
-                    # Wait for task with 5 minute timeout per user
+                    # Wait for task with 5 minute timeout per part
                     transcript_text = await asyncio.wait_for(task, timeout=300)
                     if transcript_text:
-                        all_transcripts.append(f"**{username}:** {transcript_text}")
+                        if username not in user_transcripts:
+                            user_transcripts[username] = []
+                        user_transcripts[username].append(transcript_text)
+                        logger.info(f"✅ Transcribed {username} {part_name}: {len(transcript_text)} chars")
                 except asyncio.TimeoutError:
-                    logger.error(f"❌ Timeout processing audio for {username}")
+                    logger.error(f"❌ Timeout processing audio for {username} {part_name}")
                 except Exception as e:
-                    logger.error(f"❌ Error in task for {username}: {e}")
+                    logger.error(f"❌ Error in task for {username} {part_name}: {e}")
+            
+            # Combine transcripts for each user
+            for username, transcripts in user_transcripts.items():
+                if len(transcripts) > 1:
+                    # Multiple parts - combine them
+                    combined_transcript = "\n\n".join([f"[Часть {i+1}] {transcript}" for i, transcript in enumerate(transcripts)])
+                    all_transcripts.append(f"**{username}:** {combined_transcript}")
+                else:
+                    # Single part
+                    all_transcripts.append(f"**{username}:** {transcripts[0]}")
+                    
         except Exception as e:
             logger.error(f"❌ Error processing audio tasks: {e}")
         
@@ -380,6 +392,13 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         
         logger.info("✅ Recording processing completed")
         
+        # Clean up global variables
+        user_parts.clear()
+        user_recording_start.clear()
+        for timer in user_timers.values():
+            timer.cancel()
+        user_timers.clear()
+        
     except Exception as e:
         logger.error(f"❌ Error in once_done: {e}")
         try:
@@ -394,6 +413,13 @@ async def stop_recording(ctx):
         vc = connections[ctx.guild.id]
         vc.stop_recording()
         del connections[ctx.guild.id]
+        
+        # Cancel all timers
+        for timer in user_timers.values():
+            timer.cancel()
+        user_timers.clear()
+        user_recording_start.clear()
+        
         await ctx.respond("🛑 Recording stopped")
         logger.info(f"🛑 Recording stopped in {ctx.guild.name}")
     else:
