@@ -70,7 +70,7 @@ async def record(ctx):
         return
     
     # Check if already connected to voice channel
-    if ctx.guild.voice_client is not None:
+    if ctx.guild.voice_client is not None and ctx.guild.voice_client.is_connected():
         await ctx.respond("⚠️ Bot is already connected to a voice channel! Use `/stop` first.")
         return
     
@@ -78,15 +78,9 @@ async def record(ctx):
         await ctx.respond("⚠️ Recording is already in progress on this server!")
         return
     
-    # Respond immediately to prevent interaction timeout
-    await ctx.respond("🔄 Connecting to voice channel...")
-    
     try:
-        # Connect to voice channel with timeout
-        vc = await asyncio.wait_for(
-            voice.channel.connect(timeout=30),
-            timeout=35
-        )
+        # Connect to voice channel
+        vc = await voice.channel.connect()
         connections[ctx.guild.id] = vc
         logger.info("✅ Connected to voice channel")
         
@@ -97,27 +91,19 @@ async def record(ctx):
             ctx.channel,
         )
         
-        # Update the response
-        await ctx.edit(content="🔴 Recording conversation in this channel...")
+        await ctx.respond("🔴 Recording conversation in this channel...")
         logger.info(f"🎙️ Started recording in {voice.channel.name}")
         
-    except asyncio.TimeoutError:
-        logger.error("❌ Timeout connecting to voice channel")
-        await ctx.edit(content="❌ Timeout connecting to voice channel. Please try again.")
-        # Clean up any partial connection
-        if ctx.guild.id in connections:
-            del connections[ctx.guild.id]
-        if ctx.guild.voice_client:
-            await ctx.guild.voice_client.disconnect(force=True)
-            
     except Exception as e:
         logger.error(f"❌ Error starting recording: {e}")
-        await ctx.edit(content=f"❌ Error starting recording: {e}")
-        # Clean up connection on error
+        await ctx.respond(f"❌ Error starting recording: {e}")
+        
+        # Очистить состояние voice_client
+        ctx.guild._voice_client = None
+        
+        # Clean up connections dict
         if ctx.guild.id in connections:
             del connections[ctx.guild.id]
-        if ctx.guild.voice_client:
-            await ctx.guild.voice_client.disconnect(force=True)
 
 async def process_audio_file(audio_data, username, user_id):
     """Process single audio file asynchronously"""
