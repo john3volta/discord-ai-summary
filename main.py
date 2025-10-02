@@ -23,31 +23,26 @@ def safe_strip_header_ext(data):
 
 voice_client.VoiceClient.strip_header_ext = staticmethod(safe_strip_header_ext)
 
-async def stop_user_recording_after_20min(user_id, channel):
-    """Stop recording for a specific user after 20 minutes"""
+async def stop_recording_after_20min(channel):
+    """Stop recording after 20 minutes"""
     try:
         await asyncio.sleep(20 * 60)  # 20 minutes
         
-        # Check if user is still recording
-        if user_id in user_recording_start:
-            logger.info(f"⏰ 20 minutes reached for user {user_id}, stopping recording")
-            
-            # Stop recording for this user
-            if user_id in user_timers:
-                user_timers[user_id].cancel()
-                del user_timers[user_id]
-            
-            # Mark that this user's recording should be stopped
-            user_recording_start[user_id] = None
-            
-            # Log notification only (no chat message)
-            logger.info(f"⏰ 20 minutes reached for user {user_id}, stopping recording")
+        logger.info("⏰ 20 minutes reached, stopping recording")
+        
+        # Find the voice client for this guild
+        guild = channel.guild
+        if guild.voice_client:
+            guild.voice_client.stop_recording()
+            logger.info("🛑 Recording stopped after 20 minutes")
+        else:
+            logger.warning("No voice client found to stop recording")
                 
     except asyncio.CancelledError:
-        # Timer was cancelled (user stopped talking)
-        logger.info(f"Timer cancelled for user {user_id}")
+        # Timer was cancelled (recording stopped manually)
+        logger.info("Recording timer cancelled")
     except Exception as e:
-        logger.error(f"Error in stop_user_recording_after_20min for user {user_id}: {e}")
+        logger.error(f"Error in stop_recording_after_20min: {e}")
 
 # Logging configuration
 logging.basicConfig(
@@ -65,9 +60,8 @@ bot = discord.Bot()
 connections = {}
 
 # Global variables for 20-minute recording chunks
-user_parts = {}  # {user_id: [part1, part2, part3]}
-user_recording_start = {}  # {user_id: start_time}
-user_timers = {}  # {user_id: timer_task}
+parts = {}  # {user_id: [part1, part2, part3]}
+recording_timer = None  # Global recording timer
 
 load_dotenv()
 
@@ -133,15 +127,12 @@ async def record(ctx):
             ctx.channel,
         )
         
-        # Start 20-minute timer for each user in the voice channel
-        for member in voice.channel.members:
-            if not member.bot and member.voice:
-                user_id = member.id
-                user_recording_start[user_id] = asyncio.get_event_loop().time()
-                user_timers[user_id] = asyncio.create_task(
-                    stop_user_recording_after_20min(user_id, ctx.channel)
-                )
-                logger.info(f"⏰ Started 20-minute timer for {member.display_name}")
+        # Start 20-minute timer for the entire recording
+        global recording_timer
+        recording_timer = asyncio.create_task(
+            stop_recording_after_20min(ctx.channel)
+        )
+        logger.info("⏰ Started 20-minute timer for recording")
         
         # Update the response
         await ctx.edit(content="🔴 Recording conversation in this channel...")
@@ -278,63 +269,95 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             await channel.send("⚠️ Failed to record audio")
             return
         
-        # Process each user's audio parts concurrently
+        # Add current audio to parts for each user
+        for user_id, audio in sink.audio_data.items():
+            if user_id not in parts:
+                parts[user_id] = []
+            parts[user_id].append(audio)
+            
+            member = channel.guild.get_member(user_id)
+            username = member.display_name if member else f"User_{user_id}"
+            logger.info(f"📁 Added part {len(parts[user_id])} for {username}")
+        
+        # Check if this is the final stop (manual stop command)
+        # If not, we just accumulate parts and continue recording
+        if channel.guild.id in connections:
+            # Still recording - just accumulate parts and continue
+            logger.info("📁 Parts accumulated, continuing recording...")
+            
+            # Restart recording for next 20 minutes
+            try:
+                vc = connections[channel.guild.id]
+                vc.start_recording(
+                    discord.sinks.WaveSink(
+                        filters={
+                            'voice_activity': True,
+                            'silence_threshold': 0.1,
+                            'silence_duration': 1.0
+                        }
+                    ),
+                    once_done,
+                    channel,
+                )
+                
+                # Restart timer
+                global recording_timer
+                recording_timer = asyncio.create_task(
+                    stop_recording_after_20min(channel)
+                )
+                logger.info("🔄 Recording restarted for next 20 minutes")
+                
+            except Exception as e:
+                logger.error(f"❌ Error restarting recording: {e}")
+            
+            return
+        
+        # Final stop - process all accumulated parts
+        logger.info("🛑 Final stop - processing all accumulated parts")
+        
+        # Process all parts for all users
         all_transcripts = []
         
-        # Create tasks for concurrent processing
-        tasks = []
-        for user_id, audio in sink.audio_data.items():
-            # Get user from guild
+        for user_id, user_parts_list in parts.items():
             member = channel.guild.get_member(user_id)
             username = member.display_name if member else f"User_{user_id}"
             
-            # Add current audio to user's parts
-            if user_id not in user_parts:
-                user_parts[user_id] = []
-            user_parts[user_id].append(audio)
-            
-            logger.info(f"🎵 Processing audio parts for {username} (total parts: {len(user_parts[user_id])})")
+            logger.info(f"🎵 Processing {len(user_parts_list)} parts for {username}")
             
             # Process all parts for this user
             user_transcripts = []
-            for i, part_audio in enumerate(user_parts[user_id]):
-                part_name = f"part {i+1}" if len(user_parts[user_id]) > 1 else ""
+            for i, part_audio in enumerate(user_parts_list):
+                part_name = f"part {i+1}" if len(user_parts_list) > 1 else ""
                 logger.info(f"🎵 Processing {username} {part_name}")
                 
-                # Create task for processing this part
-                task = asyncio.create_task(process_audio_file(part_audio, username, user_id))
-                tasks.append((task, username, part_name))
-        
-        # Wait for all tasks to complete with timeout
-        try:
-            # Group transcripts by user
-            user_transcripts = {}
-            for task, username, part_name in tasks:
                 try:
-                    # Wait for task with 5 minute timeout per part
-                    transcript_text = await asyncio.wait_for(task, timeout=300)
+                    # Process this part
+                    transcript_text = await asyncio.wait_for(
+                        process_audio_file(part_audio, username, user_id), 
+                        timeout=300
+                    )
                     if transcript_text:
-                        if username not in user_transcripts:
-                            user_transcripts[username] = []
-                        user_transcripts[username].append(transcript_text)
+                        user_transcripts.append(transcript_text)
                         logger.info(f"✅ Transcribed {username} {part_name}: {len(transcript_text)} chars")
+                    else:
+                        logger.warning(f"⚠️ Empty transcript for {username} {part_name}")
+                        
                 except asyncio.TimeoutError:
                     logger.error(f"❌ Timeout processing audio for {username} {part_name}")
                 except Exception as e:
-                    logger.error(f"❌ Error in task for {username} {part_name}: {e}")
+                    logger.error(f"❌ Error processing {username} {part_name}: {e}")
             
-            # Combine transcripts for each user
-            for username, transcripts in user_transcripts.items():
-                if len(transcripts) > 1:
+            # Combine transcripts for this user
+            if user_transcripts:
+                if len(user_transcripts) > 1:
                     # Multiple parts - combine them
-                    combined_transcript = "\n\n".join([f"[Часть {i+1}] {transcript}" for i, transcript in enumerate(transcripts)])
+                    combined_transcript = "\n\n".join([f"[Часть {i+1}] {transcript}" for i, transcript in enumerate(user_transcripts)])
                     all_transcripts.append(f"**{username}:** {combined_transcript}")
                 else:
                     # Single part
-                    all_transcripts.append(f"**{username}:** {transcripts[0]}")
-                    
-        except Exception as e:
-            logger.error(f"❌ Error processing audio tasks: {e}")
+                    all_transcripts.append(f"**{username}:** {user_transcripts[0]}")
+            else:
+                logger.warning(f"⚠️ No transcripts for {username}")
         
         if not all_transcripts:
             try:
@@ -393,11 +416,11 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         logger.info("✅ Recording processing completed")
         
         # Clean up global variables
-        user_parts.clear()
-        user_recording_start.clear()
-        for timer in user_timers.values():
-            timer.cancel()
-        user_timers.clear()
+        parts.clear()
+        global recording_timer
+        if recording_timer:
+            recording_timer.cancel()
+            recording_timer = None
         
     except Exception as e:
         logger.error(f"❌ Error in once_done: {e}")
@@ -414,11 +437,11 @@ async def stop_recording(ctx):
         vc.stop_recording()
         del connections[ctx.guild.id]
         
-        # Cancel all timers
-        for timer in user_timers.values():
-            timer.cancel()
-        user_timers.clear()
-        user_recording_start.clear()
+        # Cancel recording timer
+        global recording_timer
+        if recording_timer:
+            recording_timer.cancel()
+            recording_timer = None
         
         await ctx.respond("🛑 Recording stopped")
         logger.info(f"🛑 Recording stopped in {ctx.guild.name}")
