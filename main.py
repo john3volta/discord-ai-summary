@@ -6,6 +6,7 @@ from os import environ as env
 import tempfile
 import os
 import discord.voice_client as voice_client
+import asyncio
 
 original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
 
@@ -95,8 +96,97 @@ async def record(ctx):
         if ctx.guild.id in connections:
             del connections[ctx.guild.id]
 
+async def process_audio_file(audio_data, username, user_id):
+    """Process single audio file asynchronously"""
+    try:
+        # Get audio data
+        audio_bytes = audio_data.file.read()
+        
+        # Validate file size (OpenAI limit is 25MB)
+        max_size = 25 * 1024 * 1024  # 25MB
+        if len(audio_bytes) > max_size:
+            logger.warning(f"⚠️ Audio file too large for {username}: {len(audio_bytes)} bytes")
+            return None
+        
+        # Validate minimum size
+        if len(audio_bytes) < 1024:  # Less than 1KB
+            logger.warning(f"⚠️ Audio file too small for {username}: {len(audio_bytes)} bytes")
+            return None
+        
+        # Save audio to temporary file
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            temp_file.write(audio_bytes)
+            temp_file_path = temp_file.name
+        
+        try:
+            # Transcribe using OpenAI Whisper in thread pool
+            def transcribe_audio():
+                with open(temp_file_path, "rb") as audio_file:
+                    return openai_client.audio.transcriptions.create(
+                        model=env.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
+                        file=audio_file,
+                        language=env.get("SPEECH_LANG", "ru"),
+                        response_format="text"
+                    )
+            
+            # Run transcription in thread pool to avoid blocking
+            transcript_response = await asyncio.to_thread(transcribe_audio)
+            transcript_text = transcript_response.strip()
+            
+            if transcript_text:
+                logger.info(f"✅ Transcribed {username}: {len(transcript_text)} chars")
+                return transcript_text
+            else:
+                logger.warning(f"⚠️ Empty transcript for {username}")
+                return None
+                
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(temp_file_path)
+            except OSError:
+                pass
+                
+    except Exception as e:
+        logger.error(f"❌ Error processing audio for user {user_id}: {e}")
+        return None
+
+async def create_summary_async(full_transcript):
+    """Create summary asynchronously"""
+    try:
+        logger.info("🤖 Creating summary with GPT...")
+        
+        # Read prompt from file
+        prompt_file = env.get("SUMMARY_PROMPT", "prompt.md")
+        with open(prompt_file, "r", encoding="utf-8") as f:
+            system_prompt = f.read()
+        
+        def create_summary():
+            return openai_client.chat.completions.create(
+                model=env.get("OPENAI_MODEL", "gpt-4o-mini"),
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user", 
+                        "content": full_transcript
+                    }
+                ],
+                temperature=0.7
+            )
+        
+        # Run in thread pool to avoid blocking
+        summary_response = await asyncio.to_thread(create_summary)
+        return summary_response.choices[0].message.content
+        
+    except Exception as e:
+        logger.error(f"❌ Error creating summary: {e}")
+        return None
+
 async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
-    """Process completed recording"""
+    """Process completed recording asynchronously"""
     try:
         # Get list of recorded users
         recorded_users = [f"<@{user_id}>" for user_id, audio in sink.audio_data.items()]
@@ -115,45 +205,36 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             await channel.send("⚠️ Failed to record audio")
             return
         
-        # Process each user's audio
+        # Process each user's audio concurrently
         all_transcripts = []
         
+        # Create tasks for concurrent processing
+        tasks = []
         for user_id, audio in sink.audio_data.items():
-            try:
-                # Get user from guild
-                member = channel.guild.get_member(user_id)
-                username = member.display_name if member else f"User_{user_id}"
-                
-                logger.info(f"🎵 Processing audio for {username}")
-                
-                # Save audio to temporary file
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                    temp_file.write(audio.file.read())
-                    temp_file_path = temp_file.name
-                
-                # Transcribe using OpenAI Whisper
-                with open(temp_file_path, "rb") as audio_file:
-                    transcript_response = openai_client.audio.transcriptions.create(
-                        model=env.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
-                        file=audio_file,
-                        language=env.get("SPEECH_LANG", "ru"),
-                    response_format="text"
-                )
+            # Get user from guild
+            member = channel.guild.get_member(user_id)
+            username = member.display_name if member else f"User_{user_id}"
             
-                transcript_text = transcript_response.strip()
-                
-                if transcript_text:
-                    all_transcripts.append(f"**{username}:** {transcript_text}")
-                    logger.info(f"✅ Transcribed {username}: {len(transcript_text)} chars")
-                else:
-                    logger.warning(f"⚠️ Empty transcript for {username}")
-                
-                # Clean up temporary file
-                os.unlink(temp_file_path)
-                
-            except Exception as e:
-                logger.error(f"❌ Error processing audio for user {user_id}: {e}")
-                continue
+            logger.info(f"🎵 Processing audio for {username}")
+            
+            # Create task for processing this user's audio
+            task = asyncio.create_task(process_audio_file(audio, username, user_id))
+            tasks.append((task, username))
+        
+        # Wait for all tasks to complete with timeout
+        try:
+            for task, username in tasks:
+                try:
+                    # Wait for task with 5 minute timeout per user
+                    transcript_text = await asyncio.wait_for(task, timeout=300)
+                    if transcript_text:
+                        all_transcripts.append(f"**{username}:** {transcript_text}")
+                except asyncio.TimeoutError:
+                    logger.error(f"❌ Timeout processing audio for {username}")
+                except Exception as e:
+                    logger.error(f"❌ Error in task for {username}: {e}")
+        except Exception as e:
+            logger.error(f"❌ Error processing audio tasks: {e}")
         
         if not all_transcripts:
             try:
@@ -166,6 +247,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         full_transcript = "\n\n".join(all_transcripts)
         
         # Save transcript to .txt file
+        transcript_filename = None
         try:
             import datetime
             # Create transcripts directory
@@ -186,55 +268,36 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             logger.warning(f"⚠️ Could not save transcript file: {e}")
         
         # Send .txt file with transcript
-        try:
-            # Send only .txt file, no full text in message
-            with open(transcript_filename, "rb") as file:
-                await channel.send(
-                    f"📝 **Transcript for:** {', '.join(recorded_users)}",
-                    file=discord.File(file, filename=f"transcript_{timestamp}.txt")
-                )
-        except discord.Forbidden:
-            logger.error("❌ No permission to send transcript file to channel")
-            return
+        if transcript_filename and os.path.exists(transcript_filename):
+            try:
+                with open(transcript_filename, "rb") as file:
+                    await channel.send(
+                        f"📝 **Transcript for:** {', '.join(recorded_users)}",
+                        file=discord.File(file, filename=f"transcript_{timestamp}.txt")
+                    )
+            except discord.Forbidden:
+                logger.error("❌ No permission to send transcript file to channel")
+                return
         
-        # Create summary using GPT
-        try:
-            logger.info("🤖 Creating summary with GPT...")
-            
-            # Read prompt from file
-            prompt_file = env.get("SUMMARY_PROMPT", "prompt.md")
-            with open(prompt_file, "r", encoding="utf-8") as f:
-                system_prompt = f.read()
-            
-            summary_response = openai_client.chat.completions.create(
-                model=env.get("OPENAI_MODEL", "gpt-4o-mini"),
-                messages=[
-                    {
-                        "role": "system",
-                        "content": system_prompt
-                    },
-                    {
-                        "role": "user", 
-                        "content": full_transcript
-                    }
-                ],
-                temperature=0.7
-            )
-            
-            # Simple text response
-            summary_text = summary_response.choices[0].message.content
-            await channel.send(f"📋 **Conversation Summary:**\n\n{summary_text}")
-            logger.info("✅ Summary created and sent")
-                
-        except Exception as e:
-            logger.error(f"❌ Error creating summary: {e}")
+        # Create summary using GPT asynchronously
+        summary_text = await create_summary_async(full_transcript)
+        if summary_text:
+            try:
+                await channel.send(f"📋 **Conversation Summary:**\n\n{summary_text}")
+                logger.info("✅ Summary created and sent")
+            except discord.Forbidden:
+                logger.error("❌ No permission to send summary to channel")
+        else:
             await channel.send("⚠️ Failed to create conversation summary")
         
         logger.info("✅ Recording processing completed")
         
     except Exception as e:
         logger.error(f"❌ Error in once_done: {e}")
-        await channel.send(f"❌ Error processing recording: {e}")
+        try:
+            await channel.send(f"❌ Error processing recording: {e}")
+        except discord.Forbidden:
+            logger.error("❌ No permission to send error message to channel")
 
 @bot.slash_command(name="stop", description="Stop recording")
 async def stop_recording(ctx):
