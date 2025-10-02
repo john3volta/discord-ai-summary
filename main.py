@@ -69,13 +69,24 @@ async def record(ctx):
         await ctx.respond("⚠️ You are not in a voice channel!")
         return
     
+    # Check if already connected to voice channel
+    if ctx.guild.voice_client is not None:
+        await ctx.respond("⚠️ Bot is already connected to a voice channel! Use `/stop` first.")
+        return
+    
     if ctx.guild.id in connections:
         await ctx.respond("⚠️ Recording is already in progress on this server!")
         return
     
+    # Respond immediately to prevent interaction timeout
+    await ctx.respond("🔄 Connecting to voice channel...")
+    
     try:
-        # Connect to voice channel
-        vc = await voice.channel.connect()
+        # Connect to voice channel with timeout
+        vc = await asyncio.wait_for(
+            voice.channel.connect(timeout=30),
+            timeout=35
+        )
         connections[ctx.guild.id] = vc
         logger.info("✅ Connected to voice channel")
         
@@ -86,15 +97,27 @@ async def record(ctx):
             ctx.channel,
         )
         
-        await ctx.respond("🔴 Recording conversation in this channel...")
+        # Update the response
+        await ctx.edit(content="🔴 Recording conversation in this channel...")
         logger.info(f"🎙️ Started recording in {voice.channel.name}")
         
+    except asyncio.TimeoutError:
+        logger.error("❌ Timeout connecting to voice channel")
+        await ctx.edit(content="❌ Timeout connecting to voice channel. Please try again.")
+        # Clean up any partial connection
+        if ctx.guild.id in connections:
+            del connections[ctx.guild.id]
+        if ctx.guild.voice_client:
+            await ctx.guild.voice_client.disconnect(force=True)
+            
     except Exception as e:
         logger.error(f"❌ Error starting recording: {e}")
-        await ctx.respond(f"❌ Error starting recording: {e}")
+        await ctx.edit(content=f"❌ Error starting recording: {e}")
         # Clean up connection on error
         if ctx.guild.id in connections:
             del connections[ctx.guild.id]
+        if ctx.guild.voice_client:
+            await ctx.guild.voice_client.disconnect(force=True)
 
 async def process_audio_file(audio_data, username, user_id):
     """Process single audio file asynchronously"""
@@ -302,27 +325,62 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
 @bot.slash_command(name="stop", description="Stop recording")
 async def stop_recording(ctx):
     """Stop recording"""
-    if ctx.guild.id in connections:
-        vc = connections[ctx.guild.id]
-        vc.stop_recording()
-        del connections[ctx.guild.id]
-        await ctx.respond("🛑 Recording stopped")
-        logger.info(f"🛑 Recording stopped in {ctx.guild.name}")
-    else:
-        await ctx.respond("🚫 No recording in progress on this server")
+    try:
+        # Check if there's an active recording
+        if ctx.guild.id in connections:
+            vc = connections[ctx.guild.id]
+            vc.stop_recording()
+            del connections[ctx.guild.id]
+            await ctx.respond("🛑 Recording stopped")
+            logger.info(f"🛑 Recording stopped in {ctx.guild.name}")
+        # Check if bot is connected to voice but not recording
+        elif ctx.guild.voice_client is not None:
+            await ctx.guild.voice_client.disconnect()
+            await ctx.respond("🛑 Disconnected from voice channel")
+            logger.info(f"🛑 Disconnected from voice in {ctx.guild.name}")
+        else:
+            await ctx.respond("🚫 No recording or voice connection on this server")
+    except Exception as e:
+        logger.error(f"❌ Error stopping recording: {e}")
+        await ctx.respond(f"❌ Error stopping recording: {e}")
+        # Force cleanup
+        if ctx.guild.id in connections:
+            del connections[ctx.guild.id]
+        if ctx.guild.voice_client:
+            await ctx.guild.voice_client.disconnect(force=True)
 
 @bot.slash_command(name="status", description="Show bot status")
 async def status(ctx):
     """Show bot status"""
     guild_count = len(bot.guilds)
     recording_count = len(connections)
+    voice_connected = ctx.guild.voice_client is not None
     
     status_text = f"🤖 **Bot Status:**\n"
     status_text += f"• Servers: {guild_count}\n"
     status_text += f"• Active recordings: {recording_count}\n"
+    status_text += f"• Voice connected: {'🟢 Yes' if voice_connected else '🔴 No'}\n"
     status_text += f"• Status: {'🟢 Online' if bot.is_ready() else '🔴 Offline'}"
     
     await ctx.respond(status_text)
+
+@bot.slash_command(name="force_disconnect", description="Force disconnect from voice channel")
+async def force_disconnect(ctx):
+    """Force disconnect from voice channel"""
+    try:
+        if ctx.guild.voice_client is not None:
+            await ctx.guild.voice_client.disconnect(force=True)
+            await ctx.respond("🛑 Force disconnected from voice channel")
+            logger.info(f"🛑 Force disconnected from voice in {ctx.guild.name}")
+        else:
+            await ctx.respond("🚫 Bot is not connected to any voice channel")
+    except Exception as e:
+        logger.error(f"❌ Error force disconnecting: {e}")
+        await ctx.respond(f"❌ Error force disconnecting: {e}")
+    
+    # Clean up connections dict
+    if ctx.guild.id in connections:
+        del connections[ctx.guild.id]
 
 # Bot startup
 if __name__ == "__main__":
