@@ -7,6 +7,7 @@ import tempfile
 import os
 import discord.voice_client as voice_client
 import asyncio
+from pydub import AudioSegment
 
 original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
 
