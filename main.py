@@ -416,8 +416,8 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         logger.info("✅ Recording processing completed")
         
         # Clean up global variables
-        parts.clear()
         global recording_timer
+        parts.clear()
         if recording_timer:
             recording_timer.cancel()
             recording_timer = None
