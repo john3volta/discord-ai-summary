@@ -89,7 +89,13 @@ async def record(ctx):
         
         # Start recording with WaveSink
         vc.start_recording(
-            discord.sinks.WaveSink(),
+            discord.sinks.WaveSink(
+                filters={
+                    'voice_activity': True,
+                    'silence_threshold': 0.1,
+                    'silence_duration': 1.0
+                }
+            ),
             once_done,
             ctx.channel,
         )
