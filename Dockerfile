@@ -21,6 +21,7 @@ RUN pip install --upgrade pip wheel && \
 # Copy application code
 COPY main.py .
 COPY prompt.md .
+COPY transcript_prompt.md .
 
 
 # Environment variables
