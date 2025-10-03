@@ -152,10 +152,16 @@ async def process_audio_file(audio_data, username, user_id):
             logger.warning(f"⚠️ Audio file too small for {username}: {len(audio_bytes)} bytes")
             return None
         
+        logger.info(f"📊 Original WAV size for {username}: {len(audio_bytes)} bytes")
+        
         # Save audio to temporary WAV file
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
             temp_file.write(audio_bytes)
             temp_wav_path = temp_file.name
+        
+        # Check WAV file size after saving
+        wav_size = os.path.getsize(temp_wav_path)
+        logger.info(f"📊 WAV file saved: {wav_size} bytes")
         
         # Convert WAV to MP3 64kbps
         temp_mp3_path = temp_wav_path.replace('.wav', '.mp3')
