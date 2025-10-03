@@ -24,17 +24,17 @@ def safe_strip_header_ext(data):
 voice_client.VoiceClient.strip_header_ext = staticmethod(safe_strip_header_ext)
 
 async def stop_recording_after_20min(channel):
-    """Stop recording after 1 minute (for testing)"""
+    """Stop recording after 20 minutes"""
     try:
-        await asyncio.sleep(60)  # 1 minute for testing
+        await asyncio.sleep(20 * 60)  # 20 minutes
         
-        logger.info("⏰ 1 minute reached, stopping recording")
+        logger.info("⏰ 20 minutes reached, stopping recording")
         
         # Find the voice client for this guild
         guild = channel.guild
         if guild.voice_client:
             guild.voice_client.stop_recording()
-            logger.info("🛑 Recording stopped after 1 minute")
+            logger.info("🛑 Recording stopped after 20 minutes")
         else:
             logger.warning("No voice client found to stop recording")
                 
@@ -121,12 +121,12 @@ async def record(ctx):
             ctx.channel,
         )
         
-        # Start 1-minute timer for testing
+        # Start 20-minute timer
         global recording_timer
         recording_timer = asyncio.create_task(
             stop_recording_after_20min(ctx.channel)
         )
-        logger.info("⏰ Started 1-minute timer for testing")
+        logger.info("⏰ Started 20-minute timer")
         
         # Update the response
         await ctx.edit(content="🔴 Recording conversation in this channel...")
@@ -374,7 +374,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                 recording_timer = asyncio.create_task(
                     stop_recording_after_20min(channel)
                 )
-                logger.info("🔄 Recording restarted for next 1 minute")
+                logger.info("🔄 Recording restarted for next 20 minutes")
                 
             except Exception as e:
                 logger.error(f"❌ Error restarting recording: {e}")
