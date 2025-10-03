@@ -223,6 +223,39 @@ async def process_audio_file(audio_data, username, user_id):
         except OSError:
             pass
 
+async def format_transcript_as_dialog(full_transcript):
+    """Format transcript as dialog using GPT"""
+    try:
+        logger.info("🤖 Formatting transcript as dialog...")
+        
+        # Read transcript prompt from file
+        with open("transcript_prompt.md", "r", encoding="utf-8") as f:
+            system_prompt = f.read()
+        
+        def format_dialog():
+            return openai_client.chat.completions.create(
+                model=env.get("OPENAI_MODEL", "gpt-4o-mini"),
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt
+                    },
+                    {
+                        "role": "user", 
+                        "content": full_transcript
+                    }
+                ],
+                temperature=0.0
+            )
+        
+        # Run in thread pool to avoid blocking
+        response = await asyncio.to_thread(format_dialog)
+        return response.choices[0].message.content
+        
+    except Exception as e:
+        logger.error(f"❌ Error formatting transcript as dialog: {e}")
+        return full_transcript  # Return original if formatting fails
+
 async def create_summary_async(full_transcript):
     """Create summary asynchronously"""
     try:
@@ -365,6 +398,9 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         # Combine all transcripts
         full_transcript = "\n\n".join(all_transcripts)
         
+        # Format transcript as dialog using GPT
+        dialog_transcript = await format_transcript_as_dialog(full_transcript)
+        
         # Save transcript to .txt file
         transcript_filename = None
         try:
@@ -380,7 +416,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
                 f.write(f"Conversation transcript from {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}\n")
                 f.write(f"Participants: {', '.join(recorded_users)}\n")
                 f.write("=" * 50 + "\n\n")
-                f.write(full_transcript)
+                f.write(dialog_transcript)
             
             logger.info(f"💾 Transcript saved to {transcript_filename}")
         except Exception as e:
