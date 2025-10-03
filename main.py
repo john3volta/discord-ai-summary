@@ -250,9 +250,6 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         # Get list of recorded users
         recorded_users = [f"<@{user_id}>" for user_id, audio in sink.audio_data.items()]
         
-        # Disconnect from voice channel
-        await sink.vc.disconnect()
-        
         guild_id = channel.guild.id
         logger.info(f"📁 Recorded audio for {len(recorded_users)} users")
         
@@ -296,7 +293,8 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             
             return
         
-        # Final stop - process all accumulated parts
+        # Final stop - disconnect and process all accumulated parts
+        await sink.vc.disconnect()
         logger.info("🛑 Final stop - processing all accumulated parts")
         
         # Process all parts for all users
