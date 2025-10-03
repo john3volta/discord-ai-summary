@@ -6,6 +6,7 @@ Discord voice transcription bot with AI summarization. **Python implementation**
 
 - **🎙️ Voice transcription**: Records Discord voice channels using OpenAI Whisper
 - **🤖 AI summarization**: Generates meeting summaries using GPT-4o-mini with custom prompts
+- **💬 Dialog formatting**: Converts transcripts to natural dialog format
 - **👥 Speaker identification**: Identifies speakers by Discord display names
 - **📁 File management**: Saves transcripts as .txt files and uploads to Discord
 - **🐳 Docker ready**: Easy deployment with Docker Compose
@@ -34,6 +35,11 @@ Discord voice transcription bot with AI summarization. **Python implementation**
 - `OPENAI_TRANSCRIBE_MODEL` — Optional, default `whisper-1`
 - `SPEECH_LANG` — Optional, default `ru`
 - `SUMMARY_PROMPT` — Optional, default `prompt.md` (path to summary prompt file)
+
+### Prompt Files
+
+- `prompt.md` — Summary generation prompt (configurable via `SUMMARY_PROMPT`)
+- `transcript_prompt.md` — Dialog formatting prompt (fixed, no configuration needed)
 
 ## Docker Deployment
 
