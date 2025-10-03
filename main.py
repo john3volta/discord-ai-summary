@@ -7,7 +7,7 @@ import tempfile
 import os
 import discord.voice_client as voice_client
 import asyncio
-from pydub import AudioSegment
+# Audio processing - using FFmpeg directly via subprocess
 
 original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
 
@@ -168,7 +168,7 @@ async def process_audio_file(audio_data, username, user_id):
         
         def convert_to_mp3():
             import subprocess
-            # Use FFmpeg directly instead of pydub
+            # Use FFmpeg directly for MP3 conversion
             cmd = [
                 "ffmpeg", "-i", temp_wav_path,
                 "-acodec", "libmp3lame", "-ab", "64k", "-ac", "1",
@@ -177,6 +177,7 @@ async def process_audio_file(audio_data, username, user_id):
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 raise Exception(f"FFmpeg failed: {result.stderr}")
+            logger.info(f"📊 MP3 conversion completed")
             return temp_mp3_path
         
         # Run conversion in thread pool

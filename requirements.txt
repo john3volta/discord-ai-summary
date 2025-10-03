@@ -9,6 +9,3 @@ python-dotenv>=1.0.0
 
 # Cryptography for voice
 PyNaCl>=1.5.0
-
-# Audio processing (optional)
-pydub>=0.25.1
