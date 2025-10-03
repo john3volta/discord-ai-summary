@@ -290,6 +290,47 @@ async def create_summary_async(full_transcript):
         logger.error(f"❌ Error creating summary: {e}")
         return None
 
+async def process_user_audio_async(user_id, user_parts_list, channel):
+    """Process all audio parts for a single user asynchronously"""
+    member = channel.guild.get_member(user_id)
+    username = member.display_name if member else f"User_{user_id}"
+    
+    logger.info(f"🎵 Processing {len(user_parts_list)} parts for {username}")
+    
+    user_transcripts = []
+    for i, part_audio in enumerate(user_parts_list):
+        part_name = f"part {i+1}" if len(user_parts_list) > 1 else ""
+        logger.info(f"🎵 Processing {username} {part_name}")
+        
+        try:
+            transcript_text = await asyncio.wait_for(
+                process_audio_file(part_audio, username, user_id), 
+                timeout=300
+            )
+            if transcript_text:
+                user_transcripts.append(transcript_text)
+                logger.info(f"✅ Transcribed {username} {part_name}: {len(transcript_text)} chars")
+            else:
+                logger.warning(f"⚠️ Empty transcript for {username} {part_name}")
+                
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Timeout processing audio for {username} {part_name}")
+        except Exception as e:
+            logger.error(f"❌ Error processing {username} {part_name}: {e}")
+    
+    # Combine transcripts for this user
+    if user_transcripts:
+        if len(user_transcripts) > 1:
+            # Multiple parts - combine them with [Часть X] markers
+            combined_transcript = "\n\n".join([f"[Часть {i+1}] {transcript}" for i, transcript in enumerate(user_transcripts)])
+            return f"**{username}:** {combined_transcript}"
+        else:
+            # Single part
+            return f"**{username}:** {user_transcripts[0]}"
+    else:
+        logger.warning(f"⚠️ No transcripts for {username}")
+        return None
+
 async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
     """Process completed recording asynchronously"""
     global recording_timer
@@ -344,49 +385,22 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
         await sink.vc.disconnect()
         logger.info("🛑 Final stop - processing all accumulated parts")
         
-        # Process all parts for all users
-        all_transcripts = []
-        
+        # Process all parts for all users in parallel
+        tasks = []
         for user_id, user_parts_list in parts.items():
-            member = channel.guild.get_member(user_id)
-            username = member.display_name if member else f"User_{user_id}"
-            
-            logger.info(f"🎵 Processing {len(user_parts_list)} parts for {username}")
-            
-            # Process all parts for this user
-            user_transcripts = []
-            for i, part_audio in enumerate(user_parts_list):
-                part_name = f"part {i+1}" if len(user_parts_list) > 1 else ""
-                logger.info(f"🎵 Processing {username} {part_name}")
-                
-                try:
-                    # Process this part
-                    transcript_text = await asyncio.wait_for(
-                        process_audio_file(part_audio, username, user_id), 
-                        timeout=300
-                    )
-                    if transcript_text:
-                        user_transcripts.append(transcript_text)
-                        logger.info(f"✅ Transcribed {username} {part_name}: {len(transcript_text)} chars")
-                    else:
-                        logger.warning(f"⚠️ Empty transcript for {username} {part_name}")
-                        
-                except asyncio.TimeoutError:
-                    logger.error(f"❌ Timeout processing audio for {username} {part_name}")
-                except Exception as e:
-                    logger.error(f"❌ Error processing {username} {part_name}: {e}")
-            
-            # Combine transcripts for this user
-            if user_transcripts:
-                if len(user_transcripts) > 1:
-                    # Multiple parts - combine them
-                    combined_transcript = "\n\n".join([f"[Часть {i+1}] {transcript}" for i, transcript in enumerate(user_transcripts)])
-                    all_transcripts.append(f"**{username}:** {combined_transcript}")
-                else:
-                    # Single part
-                    all_transcripts.append(f"**{username}:** {user_transcripts[0]}")
-            else:
-                logger.warning(f"⚠️ No transcripts for {username}")
+            task = asyncio.create_task(process_user_audio_async(user_id, user_parts_list, channel))
+            tasks.append(task)
+        
+        # Wait for all tasks to complete
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Collect successful results
+        all_transcripts = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"❌ Error processing user {i}: {result}")
+            elif result:  # Non-empty transcript
+                all_transcripts.append(result)
         
         if not all_transcripts:
             try:
