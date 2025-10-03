@@ -167,9 +167,16 @@ async def process_audio_file(audio_data, username, user_id):
         temp_mp3_path = temp_wav_path.replace('.wav', '.mp3')
         
         def convert_to_mp3():
-            audio = AudioSegment.from_wav(temp_wav_path)
-            # Convert to MP3 with 64kbps bitrate
-            audio.export(temp_mp3_path, format="mp3", bitrate="64k")
+            import subprocess
+            # Use FFmpeg directly instead of pydub
+            cmd = [
+                "ffmpeg", "-i", temp_wav_path,
+                "-acodec", "libmp3lame", "-ab", "64k", "-ac", "1",
+                "-y", temp_mp3_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception(f"FFmpeg failed: {result.stderr}")
             return temp_mp3_path
         
         # Run conversion in thread pool
