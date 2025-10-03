@@ -12,5 +12,6 @@ services:
       - SUMMARY_PROMPT=${SUMMARY_PROMPT:-prompt.md}
     volumes:
       - ./prompt.md:/app/prompt.md:ro
+      - ./transcripts:/app/transcripts
 
 
