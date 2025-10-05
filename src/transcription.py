@@ -70,3 +70,4 @@ async def create_summary_async(full_transcript):
     except Exception as e:
         logger.error(f"❌ Error creating summary: {e}")
         return None
+

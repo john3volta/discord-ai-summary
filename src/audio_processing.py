@@ -1,6 +1,3 @@
-"""
-Audio processing module for Discord Transcript Bot.
-"""
 
 import tempfile
 import os
