@@ -124,9 +124,13 @@ async def on_voice_state_update(member, before, after):
     """Handle voice state changes"""
     if member == bot.user:
         if before.channel and not after.channel:
-            # Bot disconnected from voice channel
-            await cleanup_resources(member.guild.id)
-            logger.info("🔄 Bot disconnected from voice, cleaned up resources")
+            # Bot disconnected from voice channel - only clean up connections
+            if member.guild.id in connections:
+                vc = connections[member.guild.id]
+                if vc.is_connected():
+                    await vc.disconnect()
+                del connections[member.guild.id]
+            logger.info("🔄 Bot disconnected from voice, cleaned up connections")
         elif not before.channel and after.channel:
             logger.info(f"🔊 Bot connected to voice channel: {after.channel.name}")
 
