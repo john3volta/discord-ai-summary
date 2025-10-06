@@ -539,8 +539,6 @@ async def stop_recording(ctx):
         except Exception as e:
             logger.error(f"❌ Error stopping recording: {e}")
             await ctx.respond(f"❌ Error stopping recording: {e}")
-        finally:
-            # Clean up resources
             await cleanup_resources(ctx.guild.id)
     else:
         await ctx.respond("🚫 No recording in progress on this server")
