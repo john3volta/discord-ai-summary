@@ -7,6 +7,7 @@ import tempfile
 import os
 import discord.voice_client as voice_client
 import asyncio
+# Audio processing - using FFmpeg directly via subprocess
 
 original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
 
@@ -62,30 +63,6 @@ connections = {}
 parts = {}  # {user_id: [part1, part2, part3]}
 recording_timer = None  # Global recording timer
 
-async def cleanup_resources(guild_id):
-    """Centralized resource cleanup"""
-    global recording_timer
-    try:
-        # Cancel recording timer
-        if recording_timer and not recording_timer.done():
-            recording_timer.cancel()
-            recording_timer = None
-        
-        # Clear recording parts for this server
-        if guild_id in parts:
-            del parts[guild_id]
-            
-        # Disconnect from voice channel
-        if guild_id in connections:
-            vc = connections[guild_id]
-            if vc.is_connected():
-                await vc.disconnect()
-            del connections[guild_id]
-            
-        logger.info(f"🧹 Cleaned up resources for guild {guild_id}")
-    except Exception as e:
-        logger.error(f"❌ Error in cleanup for guild {guild_id}: {e}")
-
 load_dotenv()
 
 # OpenAI client initialization
@@ -109,7 +86,6 @@ async def on_ready():
     """Bot ready event handler"""
     logger.info(f"🤖 {bot.user} is ready!")
     logger.info(f"🔗 Connected to {len(bot.guilds)} guilds")
-    
 
 @bot.event
 async def on_disconnect():
@@ -117,23 +93,14 @@ async def on_disconnect():
     logger.warning("⚠️ WebSocket disconnected from Discord")
     # Clean up all voice connections on disconnect
     for guild_id in list(connections.keys()):
-        await cleanup_resources(guild_id)
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    """Handle voice state changes"""
-    if member == bot.user:
-        if before.channel and not after.channel:
-            # Bot disconnected from voice channel - only clean up connections
-            if member.guild.id in connections:
-                vc = connections[member.guild.id]
-                if vc.is_connected():
-                    await vc.disconnect()
-                del connections[member.guild.id]
-            logger.info("🔄 Bot disconnected from voice, cleaned up connections")
-        elif not before.channel and after.channel:
-            logger.info(f"🔊 Bot connected to voice channel: {after.channel.name}")
-
+        if guild_id in connections:
+            vc = connections[guild_id]
+            if vc.is_connected():
+                await vc.disconnect()
+            del connections[guild_id]
+        if guild_id in parts:
+            del parts[guild_id]
+    logger.info("🧹 All voice connections cleaned up on disconnect")
 
 @bot.slash_command(name="record", description="Start recording voice channel")
 async def record(ctx):
@@ -157,8 +124,8 @@ async def record(ctx):
     await ctx.respond("🔄 Connecting to voice channel...")
     
     try:
-        # Connect to voice channel with timeout
-        vc = await asyncio.wait_for(voice.channel.connect(), timeout=10.0)
+        # Connect to voice channel
+        vc = await voice.channel.connect()
         connections[ctx.guild.id] = vc
         logger.info("✅ Connected to voice channel")
         
@@ -183,8 +150,11 @@ async def record(ctx):
     except Exception as e:
         logger.error(f"❌ Error starting recording: {e}")
         await ctx.edit(content=f"❌ Error starting recording: {e}")
-        # MANDATORY cleanup on error
-        await cleanup_resources(ctx.guild.id)
+        # Clean up connection on error
+        if ctx.guild.id in connections:
+            del connections[ctx.guild.id]
+        if ctx.guild.voice_client:
+            await ctx.guild.voice_client.disconnect()
 
 
 async def process_audio_file(audio_data, username, user_id):
@@ -427,10 +397,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             return
         
         # Final stop - disconnect and process all accumulated parts
-        try:
-            await sink.vc.disconnect()
-        except Exception as e:
-            logger.warning(f"⚠️ Error disconnecting voice client: {e}")
+        await sink.vc.disconnect()
         logger.info("🛑 Final stop - processing all accumulated parts")
         
         # Process all parts for all users in parallel
@@ -514,8 +481,7 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
             del connections[guild_id]
         
         # Clean up global variables
-        if guild_id in parts:
-            del parts[guild_id]
+        parts.clear()
         if recording_timer:
             recording_timer.cancel()
             recording_timer = None
@@ -530,16 +496,19 @@ async def once_done(sink: discord.sinks, channel: discord.TextChannel, *args):
 @bot.slash_command(name="stop", description="Stop recording")
 async def stop_recording(ctx):
     """Stop recording"""
+    global recording_timer
     if ctx.guild.id in connections:
-        try:
-            vc = connections[ctx.guild.id]
-            vc.stop_recording()
-            await ctx.respond("🛑 Recording stopped")
-            logger.info(f"🛑 Recording stopped in {ctx.guild.name}")
-        except Exception as e:
-            logger.error(f"❌ Error stopping recording: {e}")
-            await ctx.respond(f"❌ Error stopping recording: {e}")
-            await cleanup_resources(ctx.guild.id)
+        vc = connections[ctx.guild.id]
+        vc.stop_recording()
+        del connections[ctx.guild.id]
+        
+        # Cancel recording timer
+        if recording_timer:
+            recording_timer.cancel()
+            recording_timer = None
+        
+        await ctx.respond("🛑 Recording stopped")
+        logger.info(f"🛑 Recording stopped in {ctx.guild.name}")
     else:
         await ctx.respond("🚫 No recording in progress on this server")
 
@@ -564,12 +533,4 @@ if __name__ == "__main__":
         exit(1)
 
     logger.info("🚀 Starting Discord bot...")
-    
-    try:
-        bot.run(token)
-    except KeyboardInterrupt:
-        logger.info("🛑 Bot stopped by user")
-    except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
-    finally:
-        logger.info("✅ Bot shutdown complete")
+    bot.run(token)
