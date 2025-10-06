@@ -7,7 +7,6 @@ import tempfile
 import os
 import discord.voice_client as voice_client
 import asyncio
-import gc
 
 original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
 
@@ -87,26 +86,6 @@ async def cleanup_resources(guild_id):
     except Exception as e:
         logger.error(f"❌ Error in cleanup for guild {guild_id}: {e}")
 
-async def periodic_cleanup():
-    """Periodic memory cleanup every 6 hours"""
-    while True:
-        try:
-            await asyncio.sleep(6 * 60 * 60)  # 6 hours
-            
-            # Clear global variables
-            parts.clear()
-            
-            # Force garbage collection
-            gc.collect()
-            
-            logger.info("🧹 Periodic cleanup completed")
-        except asyncio.CancelledError:
-            logger.info("Periodic cleanup cancelled")
-            break
-        except Exception as e:
-            logger.error(f"❌ Error in periodic cleanup: {e}")
-
-
 load_dotenv()
 
 # OpenAI client initialization
@@ -131,9 +110,14 @@ async def on_ready():
     logger.info(f"🤖 {bot.user} is ready!")
     logger.info(f"🔗 Connected to {len(bot.guilds)} guilds")
     
-    # Start periodic cleanup
-    asyncio.create_task(periodic_cleanup())
-    logger.info("🔄 Periodic cleanup started")
+
+@bot.event
+async def on_disconnect():
+    """Handle WebSocket disconnection"""
+    logger.warning("⚠️ WebSocket disconnected from Discord")
+    # Clean up all voice connections on disconnect
+    for guild_id in list(connections.keys()):
+        await cleanup_resources(guild_id)
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -169,7 +153,7 @@ async def record(ctx):
     await ctx.respond("🔄 Connecting to voice channel...")
     
     try:
-        # Connect to voice channel with timeout and better error handling
+        # Connect to voice channel with timeout
         vc = await asyncio.wait_for(voice.channel.connect(), timeout=10.0)
         connections[ctx.guild.id] = vc
         logger.info("✅ Connected to voice channel")
