@@ -91,16 +91,19 @@ async def on_ready():
 async def on_disconnect():
     """Handle WebSocket disconnection"""
     logger.warning("⚠️ WebSocket disconnected from Discord")
-    # Clean up all voice connections on disconnect
+    # Clean up only dead voice connections on disconnect
     for guild_id in list(connections.keys()):
         if guild_id in connections:
             vc = connections[guild_id]
-            if vc.is_connected():
-                await vc.disconnect()
-            del connections[guild_id]
-        if guild_id in parts:
-            del parts[guild_id]
-    logger.info("🧹 All voice connections cleaned up on disconnect")
+            # Only clean up if voice client is actually dead
+            if not vc.is_connected():
+                del connections[guild_id]
+                if guild_id in parts:
+                    del parts[guild_id]
+                logger.info(f"🧹 Cleaned up dead voice connection for guild {guild_id}")
+            else:
+                logger.info(f"🔄 Keeping active voice connection for guild {guild_id}")
+    logger.info("🧹 Voice connection cleanup completed on disconnect")
 
 @bot.slash_command(name="record", description="Start recording voice channel")
 async def record(ctx):
