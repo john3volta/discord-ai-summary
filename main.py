@@ -148,7 +148,7 @@ async def record(ctx):
         
         # Update the response
         await ctx.edit(content="🔴 Recording conversation in this channel...")
-        logger.info(f"🎙️ Started recording in {voice.channel.name}")
+        logger.info(f"🎙️ Started recording in {voice.channel.name if voice.channel else 'unknown channel'}")
         
     except Exception as e:
         logger.error(f"❌ Error starting recording: {e}")
