@@ -24,20 +24,6 @@ def safe_strip_header_ext(data):
 
 voice_client.VoiceClient.strip_header_ext = staticmethod(safe_strip_header_ext)
 
-original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
-
-def safe_strip_header_ext(data):
-    """Safe version of strip_header_ext with data length validation"""
-    if len(data) < 2:
-        return data
-    
-    try:
-        return original_strip_header_ext(data)
-    except IndexError:
-        return data
-
-voice_client.VoiceClient.strip_header_ext = staticmethod(safe_strip_header_ext)
-
 async def stop_recording_after_20min(channel):
     """Stop recording after 20 minutes"""
     try:
