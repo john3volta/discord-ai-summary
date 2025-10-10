@@ -7,6 +7,7 @@ import tempfile
 import os
 import discord.voice_client as voice_client
 import asyncio
+import subprocess
 # Audio processing - using FFmpeg directly via subprocess
 
 original_strip_header_ext = voice_client.VoiceClient.strip_header_ext
@@ -86,6 +87,31 @@ async def on_ready():
     """Bot ready event handler"""
     logger.info(f"🤖 {bot.user} is ready!")
     logger.info(f"🔗 Connected to {len(bot.guilds)} guilds")
+    
+    try:
+        with open("restart.log", "r") as f:
+            data = f.read().strip()
+            if "restart" in data:
+                parts = data.split("|")
+                if len(parts) == 3:
+                    guild_id = int(parts[1])
+                    channel_id = int(parts[2])
+                    
+                    guild = bot.get_guild(guild_id)
+                    if guild:
+                        channel = guild.get_channel(channel_id)
+                        if channel and channel.permissions_for(guild.me).send_messages:
+                            await channel.send("🤖 **Соединение восстановлено!** Введите `/record` еще раз.")
+                            logger.info(f"✅ Отправлено уведомление о перезапуске в канал {channel.name} ({guild.name})")
+                        else:
+                            logger.warning(f"⚠️ Канал {channel_id} не найден или нет прав для отправки")
+                    else:
+                        logger.warning(f"⚠️ Сервер {guild_id} не найден")
+                
+                # Очищаем файл
+                os.remove("restart.log")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при чтении restart.log: {e}")
 
 @bot.event
 async def on_disconnect():
@@ -147,6 +173,18 @@ async def record(ctx):
         await ctx.edit(content="🔴 Recording conversation in this channel...")
         logger.info(f"🎙️ Started recording in {voice.channel.name if voice.channel else 'unknown channel'}")
         
+    except discord.errors.ConnectionClosed as e:
+        if e.code == 4006:
+            logger.error(f"❌ 4006 error - потеряно соединение с Discord, перезапускаем бота")
+            await ctx.edit(content="❌ **Потеряно соединение с Discord!** Перезапускаем бота...")
+            
+            with open("restart.log", "w") as f:
+                f.write(f"restart|{ctx.guild.id}|{ctx.channel.id}")
+            
+            subprocess.run(["docker-compose", "restart", "scribe"])
+        else:
+            logger.error(f"❌ Connection error: {e}")
+            await ctx.edit(content=f"❌ Error starting recording: {e}")
     except Exception as e:
         logger.error(f"❌ Error starting recording: {e}")
         await ctx.edit(content=f"❌ Error starting recording: {e}")

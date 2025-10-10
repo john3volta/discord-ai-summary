@@ -1,5 +1,5 @@
-# Discord Bot Core (simplified with py-cord)
-py-cord[voice]>=2.4.0
+# Discord Bot Core
+discord.py[voice]>=2.3.0
 
 # OpenAI integration
 openai>=1.30.0
