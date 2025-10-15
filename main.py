@@ -101,7 +101,7 @@ async def on_ready():
                     if guild:
                         channel = guild.get_channel(channel_id)
                         if channel and channel.permissions_for(guild.me).send_messages:
-                            await channel.send("🤖 **Соединение восстановлено!** Введите `/record` еще раз.")
+                            await channel.send("❌ **Потеряно соединение с Discord!** Бот перезапущен, попробуйте снова...")
                             logger.info(f"✅ Отправлено уведомление о перезапуске в канал {channel.name} ({guild.name})")
                         else:
                             logger.warning(f"⚠️ Канал {channel_id} не найден или нет прав для отправки")
@@ -150,8 +150,8 @@ async def record(ctx):
     await ctx.respond("🔄 Connecting to voice channel...")
     
     try:
-        # Connect to voice channel
-        vc = await voice.channel.connect()
+        # Connect to voice channel (disable retry to catch 4006 immediately)
+        vc = await voice.channel.connect(reconnect=False)
         connections[ctx.guild.id] = vc
         logger.info("✅ Connected to voice channel")
         
@@ -176,7 +176,7 @@ async def record(ctx):
     except discord.errors.ConnectionClosed as e:
         if e.code == 4006:
             logger.error(f"❌ 4006 error - потеряно соединение с Discord, перезапускаем бота")
-            await ctx.edit(content="❌ **Потеряно соединение с Discord!** Перезапускаем бота...")
+            await ctx.edit(content="🔄 **Перезапускаем бота...** Подождите несколько секунд...")
             
             with open("restart.log", "w") as f:
                 f.write(f"restart|{ctx.guild.id}|{ctx.channel.id}")
@@ -536,6 +536,8 @@ async def stop_recording(ctx):
     """Stop recording"""
     global recording_timer
     if ctx.guild.id in connections:
+        await ctx.respond("🛑 Recording stopped, processing audio...")
+        
         vc = connections[ctx.guild.id]
         vc.stop_recording()
         del connections[ctx.guild.id]
@@ -545,7 +547,6 @@ async def stop_recording(ctx):
             recording_timer.cancel()
             recording_timer = None
         
-        await ctx.respond("🛑 Recording stopped")
         logger.info(f"🛑 Recording stopped in {ctx.guild.name}")
     else:
         await ctx.respond("🚫 No recording in progress on this server")
